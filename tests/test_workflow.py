@@ -19,6 +19,7 @@ from katsuo_tabetai.tools import (
 from katsuo_tabetai.workflow import (
     audit_run_items,
     build_agents,
+    run_web_research_phase,
     run_katsuo_workflow,
 )
 from test_scoring import make_candidate
@@ -137,6 +138,7 @@ def test_research_output_schema_uses_supported_url_strings() -> None:
     assert properties["recent_reviews"]["maxItems"] == 10
     assert review_schema["review_url"]["type"] == "string"
     assert review_schema["published_at"]["type"] == "string"
+    assert "YYYY-MM-01" in review_schema["published_at"]["description"]
     assert review_schema["summary"]["maxLength"] == 500
     assert review_schema["positive_points"]["items"]["minLength"] == 10
     assert review_schema["positive_points"]["items"]["maxLength"] == 30
@@ -189,6 +191,7 @@ def test_run_item_audit_requires_search_function_tools_and_handoff(tmp_path) -> 
 
     assert audit.runner_calls == 2
     assert audit.web_search_calls == 1
+    assert audit.rejected_research_candidates == 0
     assert audit.function_tool_calls == 2
     assert audit.handoff_items == 2
 
@@ -279,3 +282,56 @@ def test_workflow_continues_after_web_research_final_output(
     assert context.pending_candidates == candidates
     assert outcome.last_agent == "Katsuo Evaluation Agent"
     assert outcome.audit.runner_calls == 2
+
+
+def test_web_research_phase_excludes_invalid_candidates(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    context = KatsuoContext(
+        hotel=HotelLocation(name="Hotel", latitude=33.5, longitude=133.5),
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    web_researcher = build_agents().web_researcher
+    candidates = []
+    for index in range(1, 7):
+        candidate = make_candidate(index)
+        candidates.append(
+            RestaurantCandidateInput.model_validate(
+                candidate.model_dump(exclude={"distance_km", "within_range"})
+            )
+        )
+    invalid_candidate = candidates[-1]
+    invalid_reviews = [
+        review.model_copy(
+            update={"published_at": review.published_at.replace(year=2020)}
+        )
+        for review in invalid_candidate.recent_reviews
+    ]
+    candidates[-1] = invalid_candidate.model_copy(
+        update={"recent_reviews": invalid_reviews}
+    )
+    captured_input = ""
+
+    async def fake_run(*, starting_agent, input, context, max_turns):
+        nonlocal captured_input
+        captured_input = input
+        return SimpleNamespace(final_output=ResearchBatch(candidates=candidates))
+
+    monkeypatch.setattr("katsuo_tabetai.workflow.Runner.run", fake_run)
+
+    asyncio.run(
+        run_web_research_phase(
+            web_researcher,
+            "research",
+            context,
+            max_turns=24,
+        )
+    )
+
+    assert context.pending_candidates == candidates[:-1]
+    assert len(context.candidate_rejections) == 1
+    assert invalid_candidate.name in context.candidate_rejections[0]
+    assert "両端を含む" in captured_input
+    assert "YYYY-MM-01" in captured_input

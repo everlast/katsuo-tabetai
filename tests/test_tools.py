@@ -14,6 +14,7 @@ from katsuo_tabetai.models import (
 from katsuo_tabetai.tools import (
     RECENT_REVIEW_MAX_AGE_DAYS,
     create_top_five_report,
+    partition_candidates_by_review_validity,
     persist_restaurant_candidates,
 )
 
@@ -77,6 +78,35 @@ def test_candidate_save_rejects_reviews_outside_recent_window(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="older than"):
         persist_restaurant_candidates(context, [candidate] * 5)
+
+
+def test_research_partition_rejects_only_candidate_with_stale_review() -> None:
+    accepted_candidate = candidate_input(1)
+    rejected_candidate = candidate_input(2)
+    stale_review = rejected_candidate.recent_reviews[0].model_copy(
+        update={
+            "published_at": date.today()
+            - timedelta(days=RECENT_REVIEW_MAX_AGE_DAYS + 1)
+        }
+    )
+    rejected_candidate = rejected_candidate.model_copy(
+        update={
+            "recent_reviews": [
+                stale_review,
+                *rejected_candidate.recent_reviews[1:],
+            ]
+        }
+    )
+
+    accepted, rejections = partition_candidates_by_review_validity(
+        [accepted_candidate, rejected_candidate],
+        date.today(),
+    )
+
+    assert accepted == [accepted_candidate]
+    assert len(rejections) == 1
+    assert rejected_candidate.name in rejections[0]
+    assert "older than" in rejections[0]
 
 
 def test_candidate_input_requires_at_least_five_reviews() -> None:

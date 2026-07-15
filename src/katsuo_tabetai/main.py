@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 
+from agents import AgentsException
 from dotenv import find_dotenv, load_dotenv
 
 from .context import KatsuoContext
@@ -75,6 +76,7 @@ async def _run(args: argparse.Namespace) -> int:
                 "candidates_json": str(context.candidates_path),
                 "top_five_json": str(context.top_five_path),
                 "html": str(context.html_path),
+                "rejected_research_candidates": context.candidate_rejections,
                 "audit": outcome.audit.model_dump(),
             },
             ensure_ascii=False,
@@ -86,7 +88,11 @@ async def _run(args: argparse.Namespace) -> int:
 
 def main() -> None:
     load_project_environment()
-    raise SystemExit(asyncio.run(_run(build_parser().parse_args())))
+    try:
+        exit_code = asyncio.run(_run(build_parser().parse_args()))
+    except AgentsException as exc:
+        raise SystemExit(f"Katsuo workflow failed: {exc}") from None
+    raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":

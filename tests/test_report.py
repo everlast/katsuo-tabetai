@@ -39,3 +39,8 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
         for review in restaurant.recent_reviews:
             assert str(review.review_url) in html
             assert review.summary in html
+            assert f"{review.source_name} · {review.published_at:%Y-%m}</span>" in html
+            assert (
+                f"{review.source_name} · {review.published_at.isoformat()}</span>"
+                not in html
+            )

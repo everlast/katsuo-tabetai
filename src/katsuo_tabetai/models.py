@@ -2,8 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Annotated
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, WithJsonSchema
+
+
+# Responses function tools reject Pydantic's `format: uri`, while HttpUrl still
+# provides the runtime validation and parsed URL attributes used by this app.
+FunctionToolHttpUrl = Annotated[
+    HttpUrl,
+    WithJsonSchema({"type": "string"}, mode="validation"),
+]
 
 
 class EvidenceSourceType(StrEnum):
@@ -28,11 +37,11 @@ class RestaurantCandidateInput(BaseModel):
         min_length=1,
         description="The exact katsuo dish named by the evidence page.",
     )
-    evidence_url: HttpUrl = Field(
+    evidence_url: FunctionToolHttpUrl = Field(
         description="A page that explicitly names this restaurant's katsuo dish.",
     )
     evidence_source_type: EvidenceSourceType
-    source_urls: list[HttpUrl] = Field(
+    source_urls: list[FunctionToolHttpUrl] = Field(
         default_factory=list,
         description="Additional independent pages used to verify the restaurant.",
     )

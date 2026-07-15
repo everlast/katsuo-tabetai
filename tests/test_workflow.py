@@ -6,6 +6,7 @@ from agents import WebSearchTool
 
 from katsuo_tabetai.context import KatsuoContext
 from katsuo_tabetai.models import HotelLocation
+from katsuo_tabetai.tools import save_restaurant_candidates
 from katsuo_tabetai.workflow import audit_run_items, build_agents
 
 
@@ -25,6 +26,17 @@ def test_workflow_has_real_handoff_and_required_tools() -> None:
         for tool in evaluator.tools
     )
     assert evaluator.tool_use_behavior == "stop_on_first_tool"
+
+
+def test_candidate_tool_schema_uses_supported_url_strings() -> None:
+    candidate_schema = save_restaurant_candidates.params_json_schema["$defs"][
+        "RestaurantCandidateInput"
+    ]
+    properties = candidate_schema["properties"]
+
+    assert properties["evidence_url"]["type"] == "string"
+    assert "format" not in properties["evidence_url"]
+    assert properties["source_urls"]["items"] == {"type": "string"}
 
 
 def test_run_item_audit_requires_search_function_tools_and_handoff(tmp_path) -> None:

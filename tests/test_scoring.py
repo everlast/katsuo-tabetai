@@ -41,7 +41,10 @@ def make_reviews(index: int, rating: float | None = None) -> list[RecentReview]:
             published_at=date.today() - timedelta(days=review_index * 30),
             rating=review_rating,
             summary=f"Recent review {review_index} for restaurant {index}",
-            positive_points=["カツオの鮮度", "藁の香り"],
+            positive_points=[
+                "カツオの鮮度と旨味が高い",
+                "藁焼きの香りが豊かでよい",
+            ],
             caution_points=["混雑"] if review_index == 3 else [],
         )
         for review_index, review_rating in enumerate(ratings, start=1)
@@ -220,5 +223,5 @@ def test_rank_top_five_is_sorted_and_stable() -> None:
     )
     for item in ranked:
         assert "直近レビュー5件" in item.recommendation_reason
-        assert "カツオの鮮度" in item.recommendation_reason
+        assert "カツオの鮮度と旨味が高い" in item.recommendation_reason
         assert item.review_reputation.review_count == 5

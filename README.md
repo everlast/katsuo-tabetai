@@ -1,10 +1,12 @@
 # katsuo-tabetai
 
-高知市内の指定ホテル周辺でカツオ料理店TOP 5を作る、OpenAI Agents SDK for Pythonの学習用エージェントです。Web検索から候補保存、実handoff、決定論的評価、HTML出力までを1回のrunで行います。
+高知市内の指定ホテル周辺でカツオ料理店TOP 5を作る、OpenAI Agents SDK for Pythonの学習用エージェントです。Web検索と、候補保存から実handoff・決定論的評価・HTML出力までの2フェーズを1つのtraceで実行します。
 
 ```text
+Katsuo Web Research Agent
+  └─ WebSearchTool ──> ResearchBatch（検証済み候補）
+
 Katsuo Research Agent
-  ├─ WebSearchTool（店舗・カツオ料理・新着レビュー・根拠URLを検索）
   ├─ save_restaurant_candidates（候補JSON保存・距離判定）
   └─ handoff ──> Katsuo Evaluation Agent
                     └─ evaluate_and_render_top_five（採点・JSON/HTML出力）
@@ -13,15 +15,16 @@ Katsuo Research Agent
 ## 受入条件の実装
 
 - OpenAI Agents SDK: `Agent`, `Runner`, `WebSearchTool`, `function_tool`, `handoff`, `trace`を使用します。
-- 2エージェント: 調査担当と評価担当が同じrun内で動作します。
-- 実handoff: `researcher.handoffs=[handoff(...)]`で評価担当へ制御を移します。`Agent.as_tool()`は使用しません。
+- 3エージェント: Web調査、候補保存・制御移譲、評価を分離します。
+- 2フェーズ: Hosted `WebSearchTool`が検索callと最終messageを1レスポンスで返せるため、Web調査と後段のワークフローを別のSDK runとし、同じ`trace()`内で実行します。
+- 実handoff: 後段runの`researcher.handoffs=[handoff(...)]`で評価担当へ制御を移します。`Agent.as_tool()`は使用しません。
 - 最終エージェント: 実行後に`result.last_agent is evaluator`を検証し、違えば失敗させます。
-- 検索ツール: 調査担当の最初の行動として`WebSearchTool`を要求し、`result.new_items`に検索呼び出しがなければ失敗させます。
+- 検索ツール: Web調査フェーズで`WebSearchTool`を必須とし、2つのrunの`new_items`を合算して検索呼び出しを監査します。
 - 独自Function Tool: 候補保存と評価・HTML生成の2ツールを`@function_tool`で定義しています。
 - トレース: ワークフロー全体を`trace()`で囲み、CLIにtrace IDとダッシュボードURLを出力します。
 - 構造化保存: `outputs/restaurant_candidates.json`へ店舗情報とレビュー証拠をPydanticモデルから保存します。
 - 根拠URL: 全候補の`evidence_url`とレビューごとの`review_url`を必須にし、HTMLにもリンクを表示します。
-- 新着レビュー: 各店3〜8件を必須とし、生成日から18か月以内の投稿日・5点評価・要約・好評点・注意点を保存します。未来日、期間外、重複レビューはコードで拒否します。
+- 新着レビュー: 各店5〜10件を必須とし、生成日から365日以内の投稿日・5点評価・要約・好評点・注意点を保存します。未来日、期間外、重複レビューはコードで拒否します。
 - 範囲判定: ホテルと店舗の緯度経度からHaversine式で直線距離を計算し、`within_range`をコードで決定します。
 - 決定論スコア: 保存済みの事実とレビュー評価だけから100点満点で計算し、同点時は距離、店舗名の順で整列します。
 - 推薦理由: 料理特徴、レビュー平均、好評点、注意点、距離からコードで店舗ごとの推薦理由を生成します。
@@ -116,8 +119,8 @@ uv run pytest tests/test_scoring.py tests/test_report.py
 
 実行後のJSONに`trace_id`と`https://platform.openai.com/traces`が表示されます。該当traceでは次を確認できます。
 
-1. `Katsuo Research Agent`のWeb search call
-2. `save_restaurant_candidates`のFunction Tool call
+1. `Katsuo Web Research Agent`のWeb search callと構造化候補出力
+2. `Katsuo Research Agent`の`save_restaurant_candidates` Function Tool call
 3. `transfer_to_katsuo_evaluation`のhandoff
 4. `Katsuo Evaluation Agent`の`evaluate_and_render_top_five` call
 

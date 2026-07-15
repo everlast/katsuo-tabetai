@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timedelta, timezone
 
-from agents import RunContextWrapper, function_tool
+from agents import AgentBase, RunContextWrapper, function_tool
 
 from .context import KatsuoContext
 from .models import (
@@ -99,24 +99,26 @@ def persist_restaurant_candidates(
     }
 
 
-@function_tool
+def candidate_save_is_enabled(
+    wrapper: RunContextWrapper[KatsuoContext],
+    _: AgentBase,
+) -> bool:
+    context = wrapper.context
+    return bool(context.pending_candidates) and not context.candidates_saved
+
+
+@function_tool(
+    is_enabled=candidate_save_is_enabled,
+    failure_error_function=None,
+)
 def save_restaurant_candidates(
     wrapper: RunContextWrapper[KatsuoContext],
-    candidates: list[RestaurantCandidateInput],
 ) -> str:
-    """Validate and save researched restaurant candidates as structured JSON.
-
-    Args:
-        candidates: Restaurants found by web search. Every entry must have a page
-            that explicitly names its katsuo dish, map coordinates, and at least
-            five distinct reviews published within the last 12 months.
-    """
+    """Validate and save the structured restaurant candidates from web research."""
     context = wrapper.context
+    result = persist_restaurant_candidates(context, context.pending_candidates)
     context.candidate_save_calls += 1
-    return json.dumps(
-        persist_restaurant_candidates(context, candidates),
-        ensure_ascii=False,
-    )
+    return json.dumps(result, ensure_ascii=False)
 
 
 def create_top_five_report(context: KatsuoContext) -> dict[str, object]:
@@ -149,11 +151,12 @@ def create_top_five_report(context: KatsuoContext) -> dict[str, object]:
     }
 
 
-@function_tool
+@function_tool(failure_error_function=None)
 def evaluate_and_render_top_five(
     wrapper: RunContextWrapper[KatsuoContext],
 ) -> str:
     """Load saved candidates, score them deterministically, and write TOP 5 HTML."""
     context = wrapper.context
+    result = create_top_five_report(context)
     context.evaluation_tool_calls += 1
-    return json.dumps(create_top_five_report(context), ensure_ascii=False)
+    return json.dumps(result, ensure_ascii=False)

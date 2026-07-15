@@ -17,6 +17,7 @@ FunctionToolDate = Annotated[
     date,
     WithJsonSchema({"type": "string"}, mode="validation"),
 ]
+PositiveReviewPoint = Annotated[str, Field(min_length=10, max_length=30)]
 ReviewPoint = Annotated[str, Field(min_length=1, max_length=60)]
 
 
@@ -52,10 +53,10 @@ class RecentReview(BaseModel):
     )
     summary: str = Field(
         min_length=1,
-        max_length=240,
+        max_length=500,
         description="A short paraphrase of the review, not a verbatim quotation.",
     )
-    positive_points: list[ReviewPoint] = Field(
+    positive_points: list[PositiveReviewPoint] = Field(
         min_length=1,
         max_length=3,
         description="One to three short aspects explicitly praised by the reviewer.",
@@ -97,6 +98,10 @@ class RestaurantCandidateInput(BaseModel):
     has_seasonal_katsuo: bool
 
 
+class ResearchBatch(BaseModel):
+    candidates: list[RestaurantCandidateInput] = Field(min_length=5, max_length=30)
+
+
 class RestaurantCandidate(RestaurantCandidateInput):
     distance_km: float = Field(ge=0)
     within_range: bool
@@ -131,7 +136,7 @@ class ScoreBreakdown(BaseModel):
 
 class ReviewReputation(BaseModel):
     average_rating: float = Field(ge=1, le=5)
-    review_count: int = Field(ge=3)
+    review_count: int = Field(ge=5)
     source_count: int = Field(ge=1)
     top_positive_points: list[str]
     caution_points: list[str]

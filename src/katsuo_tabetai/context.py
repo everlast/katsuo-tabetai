@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from .models import HotelLocation
+from .models import HotelLocation, RestaurantCandidateInput
 
 
 @dataclass
@@ -11,6 +11,7 @@ class KatsuoContext:
     hotel: HotelLocation
     max_distance_km: float
     output_dir: Path
+    pending_candidates: list[RestaurantCandidateInput] = field(default_factory=list)
     candidate_save_calls: int = 0
     candidates_saved: bool = False
     evaluation_tool_calls: int = 0

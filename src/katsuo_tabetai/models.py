@@ -93,8 +93,9 @@ class RestaurantCandidateInput(BaseModel):
         min_length=5,
         max_length=10,
         description=(
-            "Five to ten distinct recent reviews with displayed dates or visit "
-            "months, ratings, paraphrased summaries, and verifiable URLs."
+            "Five to ten distinct recent reviews collected from at least two "
+            "source sites, with displayed dates or visit months, ratings, "
+            "paraphrased summaries, and verifiable URLs."
         ),
     )
     has_warayaki: bool
@@ -141,7 +142,7 @@ class ScoreBreakdown(BaseModel):
 class ReviewReputation(BaseModel):
     average_rating: float = Field(ge=1, le=5)
     review_count: int = Field(ge=5)
-    source_count: int = Field(ge=1)
+    source_count: int = Field(ge=2)
     top_positive_points: list[str]
     caution_points: list[str]
 

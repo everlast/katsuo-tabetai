@@ -104,7 +104,7 @@ def apply_range_rule(
     )
 
 
-def _normalized_host(url) -> str:
+def normalized_url_host(url) -> str:
     return (url.host or "").removeprefix("www.")
 
 
@@ -136,7 +136,7 @@ def summarize_review_reputation(
     average = sum(Decimal(str(review.rating)) for review in candidate.recent_reviews)
     average /= Decimal(review_count)
     review_hosts = {
-        _normalized_host(review.review_url) for review in candidate.recent_reviews
+        normalized_url_host(review.review_url) for review in candidate.recent_reviews
     }
     return ReviewReputation(
         average_rating=_round(average),
@@ -188,8 +188,8 @@ def score_candidate(
         katsuo_features += SEASONAL_KATSUO_POINTS
 
     unique_sources = {
-        _normalized_host(candidate.evidence_url),
-        *(_normalized_host(url) for url in candidate.source_urls),
+        normalized_url_host(candidate.evidence_url),
+        *(normalized_url_host(url) for url in candidate.source_urls),
     }
     independent_sources = (
         Decimal(min(len(unique_sources), INDEPENDENT_SOURCE_MAX_DOMAINS))

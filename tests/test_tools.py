@@ -12,6 +12,7 @@ from katsuo_tabetai.models import (
     TopFiveStore,
 )
 from katsuo_tabetai.tools import (
+    MIN_REVIEW_SOURCE_SITES,
     RECENT_REVIEW_MAX_AGE_DAYS,
     create_top_five_report,
     partition_candidates_by_review_validity,
@@ -138,3 +139,57 @@ def test_candidate_save_rejects_duplicate_reviews(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="duplicate review"):
         persist_restaurant_candidates(context, [candidate] * 5)
+
+
+def test_candidate_save_rejects_reviews_from_only_one_site(tmp_path) -> None:
+    candidate = candidate_input(1)
+    single_site_reviews = [
+        review.model_copy(
+            update={
+                "review_url": type(review.review_url)(
+                    f"https://reviews.example/restaurant/1/review/{index}"
+                )
+            }
+        )
+        for index, review in enumerate(candidate.recent_reviews, start=1)
+    ]
+    candidate = candidate.model_copy(update={"recent_reviews": single_site_reviews})
+    context = KatsuoContext(
+        hotel=HotelLocation(name="Hotel", latitude=33.5, longitude=133.5),
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=f"fewer than {MIN_REVIEW_SOURCE_SITES} source sites",
+    ):
+        persist_restaurant_candidates(context, [candidate] * 5)
+
+
+def test_research_partition_rejects_candidate_with_only_one_review_site() -> None:
+    accepted_candidate = candidate_input(1)
+    rejected_candidate = candidate_input(2)
+    single_site_reviews = [
+        review.model_copy(
+            update={
+                "review_url": type(review.review_url)(
+                    f"https://reviews.example/restaurant/2/review/{index}"
+                )
+            }
+        )
+        for index, review in enumerate(rejected_candidate.recent_reviews, start=1)
+    ]
+    rejected_candidate = rejected_candidate.model_copy(
+        update={"recent_reviews": single_site_reviews}
+    )
+
+    accepted, rejections = partition_candidates_by_review_validity(
+        [accepted_candidate, rejected_candidate],
+        date.today(),
+    )
+
+    assert accepted == [accepted_candidate]
+    assert len(rejections) == 1
+    assert rejected_candidate.name in rejections[0]
+    assert "fewer than 2 source sites" in rejections[0]

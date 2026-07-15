@@ -213,11 +213,12 @@ Required workflow:
 3. Every candidate must have an evidence_url whose page explicitly names that
    restaurant's katsuo dish. Prefer official restaurant pages, then official
    tourism pages, reservation sites, and lastly review sites including Google Maps.
-4. For every candidate, collect 5 to 10 distinct reviews published or visited
-   within the last 12 months. The page must explicitly display each review's date
-   or visit month and its exact rating. When only YYYY-MM is displayed, store
-   YYYY-MM-01 in published_at for recency calculations. Never infer a year, month,
-   or rating. Prefer multiple review platforms when available. Paraphrase each
+4. For every candidate, collect 5 to 10 distinct reviews from at least two
+   independent review platforms. At least one review must come from each platform,
+   and the review_url hostnames must contain at least two distinct domains. The
+   page must explicitly display each review's date or visit month and its exact
+   rating. When only YYYY-MM is displayed, store YYYY-MM-01 in published_at for
+   recency calculations. Never infer a year, month, or rating. Paraphrase each
    review in under 500 characters, record 1 to 3 praised aspects in 10 to 30
    characters, and include cautions the reviewer actually mentioned. Do not copy
    review text.

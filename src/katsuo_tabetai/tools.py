@@ -12,9 +12,10 @@ from .models import (
     TopFiveStore,
 )
 from .report import render_top_five_html
-from .scoring import apply_range_rule, rank_top_five
+from .scoring import apply_range_rule, normalized_url_host, rank_top_five
 
 RECENT_REVIEW_MAX_AGE_DAYS = 365
+MIN_REVIEW_SOURCE_SITES = 2
 
 
 def _deduplicate(
@@ -34,6 +35,15 @@ def _validate_recent_reviews(
     oldest_allowed = as_of - timedelta(days=RECENT_REVIEW_MAX_AGE_DAYS)
     for candidate in candidates:
         fingerprints: set[tuple[date, str]] = set()
+        review_source_sites = {
+            normalized_url_host(review.review_url)
+            for review in candidate.recent_reviews
+        }
+        if len(review_source_sites) < MIN_REVIEW_SOURCE_SITES:
+            raise ValueError(
+                f"Save rejected: {candidate.name} has reviews from fewer than "
+                f"{MIN_REVIEW_SOURCE_SITES} source sites (URL domains)."
+            )
         for review in candidate.recent_reviews:
             if review.published_at > as_of:
                 raise ValueError(

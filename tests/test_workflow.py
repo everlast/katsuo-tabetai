@@ -136,6 +136,7 @@ def test_research_output_schema_uses_supported_url_strings() -> None:
     assert properties["source_urls"]["items"] == {"type": "string"}
     assert properties["recent_reviews"]["minItems"] == 5
     assert properties["recent_reviews"]["maxItems"] == 10
+    assert "at least two source sites" in properties["recent_reviews"]["description"]
     assert review_schema["review_url"]["type"] == "string"
     assert review_schema["published_at"]["type"] == "string"
     assert "YYYY-MM-01" in review_schema["published_at"]["description"]
@@ -335,3 +336,10 @@ def test_web_research_phase_excludes_invalid_candidates(
     assert invalid_candidate.name in context.candidate_rejections[0]
     assert "両端を含む" in captured_input
     assert "YYYY-MM-01" in captured_input
+
+
+def test_web_researcher_requires_reviews_from_at_least_two_platforms() -> None:
+    instructions = " ".join(build_agents().web_researcher.instructions.split())
+
+    assert "at least two independent review platforms" in instructions
+    assert "at least two distinct domains" in instructions

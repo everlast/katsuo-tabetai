@@ -51,6 +51,42 @@ def make_reviews(index: int, rating: float | None = None) -> list[RecentReview]:
     ]
 
 
+def test_review_points_remove_structured_output_artifacts() -> None:
+    review = RecentReview(
+        source_name="Review A",
+        review_url="https://reviews.example/restaurant/1/review/1",
+        published_at=date.today(),
+        rating=4.0,
+        summary="Recent review",
+        positive_points=[
+            "鰹が本格的さに満足.",
+            "観光向きの安心感. 2-3],",
+            "caution_points':['混雑しやすい']},{",
+        ],
+        caution_points=["人気で予約推奨. 2-3", "caution_points:["],
+    )
+
+    assert review.positive_points == [
+        "鰹が本格的さに満足",
+        "観光向きの安心感",
+    ]
+    assert review.caution_points == ["人気で予約推奨"]
+
+
+def test_review_points_split_concatenated_array_values() -> None:
+    review = RecentReview(
+        source_name="Review A",
+        review_url="https://reviews.example/restaurant/1/review/1",
+        published_at=date.today(),
+        rating=4.0,
+        summary="Recent review",
+        positive_points=['駅近. 2-3","期待通り. 2-3'],
+        caution_points=[],
+    )
+
+    assert review.positive_points == ["駅近", "期待通り"]
+
+
 def make_candidate(
     index: int,
     latitude_offset: float = 0.001,

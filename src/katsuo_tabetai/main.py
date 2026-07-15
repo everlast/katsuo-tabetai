@@ -90,6 +90,7 @@ async def _run(args: argparse.Namespace) -> int:
                 "last_agent": outcome.last_agent,
                 "trace_id": outcome.trace_id,
                 "trace_dashboard": "https://platform.openai.com/traces",
+                "restaurant_cache_dir": str(context.restaurant_cache_dir),
                 "candidates_json": str(context.candidates_path),
                 "top_five_json": str(context.top_five_path),
                 "html": str(context.html_path),

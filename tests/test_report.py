@@ -39,18 +39,38 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
         "新着レビューの評判",
         "ホテルからの距離",
         "平均評価",
-        "確認件数",
+        "確認件数による加点",
         "情報源数",
     ):
         assert label in html
     assert html.count('class="restaurant"') == 5
+    assert 'class="ranking-index"' in html
+    assert "掲載店へ移動" in html
+    assert 'class="score-note"' in html
+    assert 'class="score-note-items"' in html
+    assert "スコアはどう決まる？" in html
+    for explanation in (
+        "店舗公式 25点、観光公式 21点、予約サイト 16点、レビューサイト 10点",
+        "料理名の掲載 8点を基礎に、藁焼き 5点、塩たたき 4点、旬の案内 3点",
+        "1ドメインにつき 2点、最大 5ドメイン",
+        "平均評価 20点、確認件数 3点、情報源数 2点",
+        "検索距離の上限で0点",
+    ):
+        assert explanation in html
+    assert html.rfind('class="restaurant"') < html.index('class="score-note"')
+    assert html.index('class="ranking-index"') < html.index('class="restaurant"')
     for restaurant in restaurants:
+        assert f'href="#restaurant-{restaurant.rank}"' in html
         assert restaurant.name in html
         assert str(restaurant.evidence_url) in html
         assert restaurant.recommendation_reason in html
         assert "新着レビューから見た評判" in html
         assert f"{restaurant.score_breakdown.evidence:.2f} / 25" in html
         assert f"{restaurant.score_breakdown.recent_reviews:.2f} / 25" in html
+        assert (
+            f"{restaurant.review_reputation.review_count}件を確認"
+            "（5件で満点）"
+        ) in html
         for review in restaurant.recent_reviews:
             assert str(review.review_url) in html
             assert review.summary in html

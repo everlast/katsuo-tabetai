@@ -17,6 +17,7 @@ from katsuo_tabetai.tools import (
     save_restaurant_candidates,
 )
 from katsuo_tabetai.workflow import (
+    InsufficientResearchCandidatesError,
     InvalidResearchOutputError,
     NoValidResearchCandidatesError,
     audit_run_items,
@@ -182,7 +183,7 @@ def test_research_output_schema_uses_supported_url_strings() -> None:
     assert review_schema["published_at"]["type"] == "string"
     assert "YYYY-MM-01" in review_schema["published_at"]["description"]
     assert review_schema["summary"]["maxLength"] == 500
-    assert review_schema["positive_points"]["items"]["minLength"] == 10
+    assert review_schema["positive_points"]["items"]["minLength"] == 2
     assert review_schema["positive_points"]["items"]["maxLength"] == 30
     assert '"format"' not in json.dumps(tool_schema)
 
@@ -419,9 +420,61 @@ def test_workflow_retries_web_research_when_candidate_pool_is_insufficient(
     ]
     assert len(context.pending_candidates) == 6
     assert "保存条件を満たしていません" in web_inputs[1]
+    assert "範囲内の有効店舗があと 4 店必要" in web_inputs[1]
+    assert "IN RANGE" in web_inputs[1]
     assert outcome.last_agent == "Katsuo Evaluation Agent"
     assert outcome.audit.runner_calls == 3
     assert outcome.audit.web_search_calls == 2
+
+
+def test_workflow_caches_partial_pool_when_attempt_limit_is_reached(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    context = KatsuoContext(
+        hotel=HOTEL,
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    agents = build_agents()
+    web_researcher = agents.web_researcher
+    candidates = [
+        RestaurantCandidateInput.model_validate(
+            make_candidate(index).model_dump(exclude={"distance_km", "within_range"})
+        )
+        for index in range(1, 5)
+    ]
+    research_batch = ResearchBatch(candidates=[*candidates, candidates[0]])
+
+    monkeypatch.setattr(
+        "katsuo_tabetai.workflow.build_agents",
+        lambda model=None: agents,
+    )
+    monkeypatch.setattr(
+        "katsuo_tabetai.workflow.trace",
+        lambda **kwargs: nullcontext(),
+    )
+
+    async def fake_run(*, starting_agent, input, context, max_turns):
+        assert starting_agent is web_researcher
+        return SimpleNamespace(
+            final_output=research_batch,
+            last_agent=web_researcher,
+            new_items=[
+                SimpleNamespace(
+                    type="tool_call_item",
+                    raw_item={"type": "web_search_call"},
+                )
+            ],
+        )
+
+    monkeypatch.setattr("katsuo_tabetai.workflow.Runner.run", fake_run)
+
+    with pytest.raises(InsufficientResearchCandidatesError, match="Received 4"):
+        asyncio.run(run_katsuo_workflow(context, research_attempts=1))
+
+    assert context.cached_candidates_written == 4
+    assert len(list(context.restaurant_cache_dir.glob("*.json"))) == 4
 
 
 def test_workflow_retries_web_research_after_malformed_structured_output(
@@ -609,6 +662,8 @@ def test_web_research_phase_excludes_invalid_candidates(
 
     assert context.pending_candidates == candidates[:-1]
     assert len(context.candidate_rejections) == 1
+    assert context.cached_candidates_written == 5
+    assert len(list(context.restaurant_cache_dir.glob("*.json"))) == 5
     assert invalid_candidate.name in context.candidate_rejections[0]
     assert "両端を含む" in captured_input
     assert "YYYY-MM-01" in captured_input

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
@@ -9,7 +12,9 @@ from agents import AgentBase, RunContextWrapper, function_tool
 from .context import KatsuoContext
 from .models import (
     CandidateStore,
+    RecentReview,
     RestaurantCandidate,
+    RestaurantCacheEntry,
     RestaurantCandidateInput,
     TopFiveStore,
 )
@@ -17,6 +22,7 @@ from .report import render_top_five_html
 from .scoring import apply_range_rule, haversine_km, normalized_url_host, rank_top_five
 
 RECENT_REVIEW_MAX_AGE_DAYS = 365
+MIN_RECENT_REVIEW_COUNT = 5
 MIN_REVIEW_SOURCE_SITES = 2
 MIN_IN_RANGE_CANDIDATES = 5
 DUPLICATE_LOCATION_THRESHOLD_KM = 0.05
@@ -75,6 +81,35 @@ def deduplicate_restaurant_candidates(
     return unique
 
 
+def merge_restaurant_candidates(
+    existing_candidates: list[RestaurantCandidateInput],
+    incoming_candidates: list[RestaurantCandidateInput],
+) -> list[RestaurantCandidateInput]:
+    """Merge candidates while letting newer research replace the same location."""
+    merged = list(existing_candidates)
+    for candidate in incoming_candidates:
+        for index, existing in enumerate(merged):
+            if _is_same_restaurant_location(existing, candidate):
+                merged[index] = candidate
+                break
+        else:
+            merged.append(candidate)
+    return merged
+
+
+def _candidate_cache_filename(candidate: RestaurantCandidateInput) -> str:
+    identity = "\0".join(
+        (
+            _normalize_identity_text(candidate.name),
+            _normalize_identity_text(candidate.address),
+        )
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+    normalized_name = unicodedata.normalize("NFKC", candidate.name)
+    readable_name = re.sub(r"[^\w-]+", "-", normalized_name).strip("-_")[:48]
+    return f"{readable_name or 'restaurant'}-{digest}.json"
+
+
 def _summarize_deduplicated_candidate_pool(
     context: KatsuoContext,
     candidates: list[RestaurantCandidateInput],
@@ -115,44 +150,56 @@ def insufficient_candidate_pool_message(
     )
 
 
+def _filter_valid_reviews(
+    candidate: RestaurantCandidateInput,
+    as_of: date,
+) -> tuple[list[RecentReview], list[str]]:
+    oldest_allowed = as_of - timedelta(days=RECENT_REVIEW_MAX_AGE_DAYS)
+    fingerprints: set[tuple[date, str]] = set()
+    valid_reviews: list[RecentReview] = []
+    issues: list[str] = []
+    for review in candidate.recent_reviews:
+        if review.published_at > as_of:
+            issues.append(
+                f"a future-dated review ({review.published_at.isoformat()})"
+            )
+            continue
+        if review.published_at < oldest_allowed:
+            issues.append(
+                f"a review older than {RECENT_REVIEW_MAX_AGE_DAYS} days "
+                f"({review.published_at.isoformat()})"
+            )
+            continue
+        fingerprint = (
+            review.published_at,
+            "".join(review.summary.casefold().split()),
+        )
+        if fingerprint in fingerprints:
+            issues.append(
+                f"a duplicate review dated {review.published_at.isoformat()}"
+            )
+            continue
+        fingerprints.add(fingerprint)
+        valid_reviews.append(review)
+    return valid_reviews, issues
+
+
 def _validate_recent_reviews(
     candidates: list[RestaurantCandidateInput],
     as_of: date,
 ) -> None:
-    oldest_allowed = as_of - timedelta(days=RECENT_REVIEW_MAX_AGE_DAYS)
     for candidate in candidates:
-        fingerprints: set[tuple[date, str]] = set()
+        valid_reviews, issues = _filter_valid_reviews(candidate, as_of)
+        if issues:
+            raise ValueError(f"Save rejected: {candidate.name} has {issues[0]}.")
         review_source_sites = {
-            normalized_url_host(review.review_url)
-            for review in candidate.recent_reviews
+            normalized_url_host(review.review_url) for review in valid_reviews
         }
         if len(review_source_sites) < MIN_REVIEW_SOURCE_SITES:
             raise ValueError(
                 f"Save rejected: {candidate.name} has reviews from fewer than "
                 f"{MIN_REVIEW_SOURCE_SITES} source sites (URL domains)."
             )
-        for review in candidate.recent_reviews:
-            if review.published_at > as_of:
-                raise ValueError(
-                    f"Save rejected: {candidate.name} has a future-dated review "
-                    f"({review.published_at.isoformat()})."
-                )
-            if review.published_at < oldest_allowed:
-                raise ValueError(
-                    f"Save rejected: {candidate.name} has a review older than "
-                    f"{RECENT_REVIEW_MAX_AGE_DAYS} days "
-                    f"({review.published_at.isoformat()})."
-                )
-            fingerprint = (
-                review.published_at,
-                "".join(review.summary.casefold().split()),
-            )
-            if fingerprint in fingerprints:
-                raise ValueError(
-                    f"Save rejected: {candidate.name} contains a duplicate review "
-                    f"dated {review.published_at.isoformat()}."
-                )
-            fingerprints.add(fingerprint)
 
 
 def partition_candidates_by_review_validity(
@@ -163,13 +210,113 @@ def partition_candidates_by_review_validity(
     accepted: list[RestaurantCandidateInput] = []
     rejections: list[str] = []
     for candidate in candidates:
-        try:
-            _validate_recent_reviews([candidate], as_of)
-        except ValueError as exc:
-            rejections.append(str(exc))
-        else:
-            accepted.append(candidate)
+        valid_reviews, issues = _filter_valid_reviews(candidate, as_of)
+        if len(valid_reviews) < MIN_RECENT_REVIEW_COUNT:
+            issue_detail = "; ".join(issues[:3]) or "too few review entries"
+            if len(issues) > 3:
+                issue_detail += f"; and {len(issues) - 3} more issue(s)"
+            rejections.append(
+                f"Save rejected: {candidate.name} has only {len(valid_reviews)} "
+                "valid recent reviews after filtering; at least "
+                f"{MIN_RECENT_REVIEW_COUNT} required. Removed: {issue_detail}."
+            )
+            continue
+        review_source_sites = {
+            normalized_url_host(review.review_url) for review in valid_reviews
+        }
+        if len(review_source_sites) < MIN_REVIEW_SOURCE_SITES:
+            rejections.append(
+                f"Save rejected: {candidate.name} has reviews from fewer than "
+                f"{MIN_REVIEW_SOURCE_SITES} source sites (URL domains) after filtering."
+            )
+            continue
+        accepted.append(candidate.model_copy(update={"recent_reviews": valid_reviews}))
     return accepted, rejections
+
+
+def cache_restaurant_candidates(
+    context: KatsuoContext,
+    candidates: list[RestaurantCandidateInput],
+    updated_at: datetime | None = None,
+) -> int:
+    """Persist one independently reusable JSON file per restaurant."""
+    unique_candidates = deduplicate_restaurant_candidates(candidates)
+    if not unique_candidates:
+        return 0
+    context.restaurant_cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_timestamp = updated_at or datetime.now(timezone.utc)
+    for candidate in unique_candidates:
+        entry = RestaurantCacheEntry(
+            updated_at=cache_timestamp,
+            candidate=candidate,
+        )
+        cache_path = context.restaurant_cache_dir / _candidate_cache_filename(candidate)
+        temporary_path = cache_path.with_suffix(".json.tmp")
+        temporary_path.write_text(entry.model_dump_json(indent=2), encoding="utf-8")
+        temporary_path.replace(cache_path)
+    return len(unique_candidates)
+
+
+def _bootstrap_restaurant_cache(context: KatsuoContext) -> str | None:
+    if context.restaurant_cache_dir.exists() and any(
+        context.restaurant_cache_dir.glob("*.json")
+    ):
+        return None
+    if not context.candidates_path.exists():
+        return None
+    try:
+        store = CandidateStore.model_validate_json(
+            context.candidates_path.read_text(encoding="utf-8")
+        )
+    except ValueError as exc:
+        return f"Existing aggregate candidate file could not seed cache: {exc}"
+    candidates = [
+        RestaurantCandidateInput.model_validate(
+            candidate.model_dump(exclude={"distance_km", "within_range"})
+        )
+        for candidate in store.candidates
+    ]
+    cache_restaurant_candidates(context, candidates, updated_at=store.generated_at)
+    return None
+
+
+def load_cached_restaurant_candidates(
+    context: KatsuoContext,
+    as_of: date,
+) -> tuple[list[RestaurantCandidateInput], list[str]]:
+    """Load cached restaurants that remain review-valid and in the current range."""
+    rejections: list[str] = []
+    bootstrap_error = _bootstrap_restaurant_cache(context)
+    if bootstrap_error:
+        rejections.append(bootstrap_error)
+    if not context.restaurant_cache_dir.exists():
+        return [], rejections
+
+    entries: list[RestaurantCacheEntry] = []
+    for cache_path in sorted(context.restaurant_cache_dir.glob("*.json")):
+        try:
+            entries.append(
+                RestaurantCacheEntry.model_validate_json(
+                    cache_path.read_text(encoding="utf-8")
+                )
+            )
+        except ValueError as exc:
+            rejections.append(f"Cache ignored: {cache_path.name} is invalid: {exc}")
+    entries.sort(key=lambda entry: entry.updated_at.isoformat(), reverse=True)
+    cached_candidates = deduplicate_restaurant_candidates(
+        [entry.candidate for entry in entries]
+    )
+    review_valid, review_rejections = partition_candidates_by_review_validity(
+        cached_candidates,
+        as_of,
+    )
+    rejections.extend(review_rejections)
+    in_range = [
+        candidate
+        for candidate in review_valid
+        if apply_range_rule(candidate, context.hotel, context.max_distance_km).within_range
+    ]
+    return in_range, rejections
 
 
 def persist_restaurant_candidates(

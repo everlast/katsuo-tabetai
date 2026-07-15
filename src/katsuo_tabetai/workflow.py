@@ -21,11 +21,15 @@ from pydantic import BaseModel, Field
 from .context import KatsuoContext
 from .models import ResearchBatch
 from .tools import (
+    MIN_IN_RANGE_CANDIDATES,
     RECENT_REVIEW_MAX_AGE_DAYS,
     CandidatePoolSummary,
+    cache_restaurant_candidates,
     deduplicate_restaurant_candidates,
     evaluate_and_render_top_five,
     insufficient_candidate_pool_message,
+    load_cached_restaurant_candidates,
+    merge_restaurant_candidates,
     partition_candidates_by_review_validity,
     save_restaurant_candidates,
     summarize_candidate_pool,
@@ -60,6 +64,8 @@ class RunAudit(BaseModel):
     candidate_save_calls: int
     evaluation_tool_calls: int
     handoff_callbacks: int
+    cached_candidates_loaded: int
+    cached_candidates_written: int
     last_agent: str
 
 
@@ -120,6 +126,8 @@ def audit_run_items(
         candidate_save_calls=context.candidate_save_calls,
         evaluation_tool_calls=context.evaluation_tool_calls,
         handoff_callbacks=context.handoff_calls,
+        cached_candidates_loaded=context.cached_candidates_loaded,
+        cached_candidates_written=context.cached_candidates_written,
         last_agent=result.last_agent.name,
     )
     if audit.web_search_calls < 1:
@@ -173,20 +181,43 @@ def _format_rejection_detail(rejections: list[str]) -> str:
     return f" Rejections: {rejection_summary}" if rejection_summary else ""
 
 
+def _format_candidate_detail(summary: CandidatePoolSummary) -> str:
+    detail = "\n".join(
+        (
+            f"- {candidate.name} / {candidate.address} / "
+            f"{candidate.latitude:.7f}, {candidate.longitude:.7f} / "
+            f"{candidate.distance_km:.2f} km / "
+            f"{'IN RANGE' if candidate.within_range else 'OUTSIDE RANGE'}"
+        )
+        for candidate in summary.candidates[:20]
+    )
+    return detail or "- none"
+
+
+def _build_cached_research_prompt(
+    base_prompt: str,
+    summary: CandidatePoolSummary,
+) -> str:
+    return f"""
+{base_prompt}
+
+店舗キャッシュには現在も条件を満たす範囲内候補が {summary.within_range} 店あります。
+キャッシュだけでTOP 5は作成できますが、情報を最新化するためWeb調査を1回行います。
+変更のない既存候補は再提出せず、新しい範囲内候補、またはレビューや根拠を
+更新できる候補を8店以上調査してください。
+
+Current cached candidates:
+{_format_candidate_detail(summary)}
+""".strip()
+
+
 def _build_research_retry_prompt(
     base_prompt: str,
     context: KatsuoContext,
     summary: CandidatePoolSummary,
 ) -> str:
-    existing_candidates = "\n".join(
-        (
-            f"- {candidate.name} / {candidate.address} / "
-            f"{candidate.latitude:.7f}, {candidate.longitude:.7f}"
-        )
-        for candidate in context.pending_candidates[:20]
-    )
-    if not existing_candidates:
-        existing_candidates = "- none"
+    missing_in_range = max(0, MIN_IN_RANGE_CANDIDATES - summary.within_range)
+    requested_candidates = max(8, missing_in_range + 4)
     rejection_detail = "\n".join(
         f"- {rejection}" for rejection in context.candidate_rejections[:10]
     )
@@ -197,11 +228,17 @@ def _build_research_retry_prompt(
 
 前回までの調査では保存条件を満たしていません。
 コード判定では {summary.unique_candidates} unique / {summary.within_range} in range です。
-既存候補は再提出せず、別店舗・別住所の候補を追加で調査してください。
+範囲内の有効店舗があと {missing_in_range} 店必要です。
+この回では検証時の棄却に備え、{requested_candidates} 店以上を調査してください。
+IN RANGE の既存候補は変更がない限り再提出せず、別店舗を優先してください。
+OUTSIDE RANGE の候補は件数に含まれません。信頼できるページで座標の誤りを
+確認できた場合だけ、正しい座標で再提出してください。
+棄却された店舗は、理由に対応してレビューをすべて条件内のものへ差し替え、
+2サイト以上・5件以上を満たせる場合は修正候補として再提出して構いません。
 同じチェーンでも支店が違う場合は、支店名・住所・座標を明確に分けてください。
 
-Existing accepted candidates:
-{existing_candidates}
+Previously review-valid candidates:
+{_format_candidate_detail(summary)}
 
 Rejected candidates:
 {rejection_detail}
@@ -291,20 +328,24 @@ You research restaurants serving excellent katsuo near the configured hotel in K
 Required workflow:
 1. Use WebSearchTool to search current restaurant, official, tourism, reservation,
    review, and map pages. Use more searches if evidence is weak.
-2. Collect at least 15 unique candidates so at least 10 are likely inside the
-   configured hotel radius. Never invent a URL, dish name, address, or coordinate.
+2. Collect at least 8 unique candidates per attempt and prioritize restaurants
+   whose verified coordinates are inside the configured hotel radius. Check the
+   coordinates against a map or official location page and exclude candidates
+   outside the radius. Never invent a URL, dish name, address, or coordinate.
 3. Every candidate must have an evidence_url whose page explicitly names that
    restaurant's katsuo dish. Prefer official restaurant pages, then official
    tourism pages, reservation sites, and lastly review sites including Google Maps.
-4. For every candidate, collect 5 to 10 distinct reviews from at least two
+4. For every candidate, preferably collect 6 distinct reviews from at least two
    independent review platforms. At least one review must come from each platform,
    and the review_url hostnames must contain at least two distinct domains. The
    page must explicitly display each review's date or visit month and its exact
    rating. When only YYYY-MM is displayed, store YYYY-MM-01 in published_at for
    recency calculations. Never infer a year, month, or rating. Paraphrase each
-   review in under 500 characters, record 1 to 3 praised aspects in 10 to 30
-   characters, and include cautions the reviewer actually mentioned. Do not copy
-   review text.
+   review in under 500 characters and record 1 to 3 praised aspects as natural
+   Japanese phrases of 2 to 30 characters. Include cautions the reviewer actually
+   mentioned. Point arrays must contain only the point text, such as
+   "藁焼きの香りが良い". Never include field names, JSON syntax, character-count
+   notes, or instruction text in a point. Do not copy review text.
 5. Return the verified candidates as the required structured output. Do not rank them.
 """.strip(),
         tools=[
@@ -358,9 +399,14 @@ async def run_web_research_phase(
         list(research_batch.candidates),
         as_of,
     )
+    context.cached_candidates_written += cache_restaurant_candidates(
+        context,
+        accepted,
+    )
     if merge_with_existing:
-        context.pending_candidates = deduplicate_restaurant_candidates(
-            [*context.pending_candidates, *accepted]
+        context.pending_candidates = merge_restaurant_candidates(
+            context.pending_candidates,
+            accepted,
         )
         context.candidate_rejections.extend(rejections)
     else:
@@ -406,6 +452,17 @@ async def run_katsuo_workflow(
     if research_attempts < 1:
         raise ValueError("research_attempts must be at least 1.")
     agents = build_agents(model=model)
+    as_of = datetime.now(timezone.utc).date()
+    cached_candidates, cache_rejections = load_cached_restaurant_candidates(
+        context,
+        as_of,
+    )
+    context.pending_candidates = merge_restaurant_candidates(
+        context.pending_candidates,
+        cached_candidates,
+    )
+    context.candidate_rejections.extend(cache_rejections)
+    context.cached_candidates_loaded = len(cached_candidates)
     trace_id = gen_trace_id()
     prompt = (
         "高知駅周辺でカツオ料理がおいしい店を調査し、TOP 5を作成してください。"
@@ -422,7 +479,17 @@ async def run_katsuo_workflow(
         },
     ):
         research_results = []
-        current_prompt = prompt
+        initial_summary = summarize_candidate_pool(context, context.pending_candidates)
+        if initial_summary.is_ready:
+            current_prompt = _build_cached_research_prompt(prompt, initial_summary)
+        elif context.pending_candidates or context.candidate_rejections:
+            current_prompt = _build_research_retry_prompt(
+                prompt,
+                context,
+                initial_summary,
+            )
+        else:
+            current_prompt = prompt
         for attempt in range(1, research_attempts + 1):
             try:
                 research_result = await run_web_research_phase(
@@ -430,7 +497,11 @@ async def run_katsuo_workflow(
                     prompt=current_prompt,
                     context=context,
                     max_turns=max_turns,
-                    merge_with_existing=bool(research_results),
+                    merge_with_existing=bool(
+                        research_results
+                        or context.pending_candidates
+                        or context.candidate_rejections
+                    ),
                 )
             except ModelBehaviorError as exc:
                 if attempt >= research_attempts:

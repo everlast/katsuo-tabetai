@@ -231,6 +231,7 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
       --line: #d5dcd8;
       --ocean: #087f78;
       --bonito: #c94432;
+      --rank: #004AAD;
       --market: #f1bf3a;
     }}
     * {{ box-sizing: border-box; }}
@@ -337,7 +338,7 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
       display: grid;
       place-content: center;
       min-height: 260px;
-      background: var(--bonito);
+      background: var(--rank);
       color: var(--white);
       text-align: center;
     }}

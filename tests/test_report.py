@@ -44,6 +44,8 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
     ):
         assert label in html
     assert html.count('class="restaurant"') == 5
+    assert "--rank: #004AAD;" in html
+    assert "background: var(--rank);" in html
     assert 'class="ranking-index"' in html
     assert "掲載店へ移動" in html
     assert 'class="score-note"' in html

@@ -30,7 +30,7 @@ HOTEL = HotelLocation(
 
 
 def make_reviews(index: int, rating: float | None = None) -> list[RecentReview]:
-    ratings = [rating] * 3 if rating is not None else [4.8, 4.4, 4.6]
+    ratings = [rating] * 5 if rating is not None else [4.8, 4.4, 4.6, 4.7, 4.5]
     return [
         RecentReview(
             source_name="Review A" if review_index < 2 else "Review B",
@@ -175,28 +175,6 @@ def test_independent_source_points_are_capped_at_five_domains() -> None:
 
 def test_recent_review_points_have_a_twenty_five_point_maximum() -> None:
     candidate = make_candidate(1, review_rating=5.0)
-    three_reviews = score_candidate(candidate, 2.5)
-
-    assert three_reviews.recent_reviews == 23.8
-
-    five_reviews = [
-        *candidate.recent_reviews,
-        candidate.recent_reviews[0].model_copy(
-            update={
-                "review_url": type(candidate.recent_reviews[0].review_url)(
-                    "https://reviews-0.example/restaurant/1/review/4"
-                )
-            }
-        ),
-        candidate.recent_reviews[0].model_copy(
-            update={
-                "review_url": type(candidate.recent_reviews[0].review_url)(
-                    "https://reviews-1.example/restaurant/1/review/5"
-                )
-            }
-        ),
-    ]
-    candidate = candidate.model_copy(update={"recent_reviews": five_reviews})
 
     assert score_candidate(candidate, 2.5).recent_reviews == 25.0
 
@@ -227,8 +205,8 @@ def test_recent_review_reputation_changes_score_deterministically() -> None:
     high_score = score_candidate(highly_rated, max_distance_km=2.5)
     low_score = score_candidate(poorly_rated, max_distance_km=2.5)
 
-    assert high_score.recent_reviews == 23.8
-    assert low_score.recent_reviews == 11.8
+    assert high_score.recent_reviews == 25.0
+    assert low_score.recent_reviews == 13.0
     assert high_score.total > low_score.total
 
 
@@ -241,6 +219,6 @@ def test_rank_top_five_is_sorted_and_stable() -> None:
         [item.score for item in ranked], reverse=True
     )
     for item in ranked:
-        assert "直近レビュー3件" in item.recommendation_reason
+        assert "直近レビュー5件" in item.recommendation_reason
         assert "カツオの鮮度" in item.recommendation_reason
-        assert item.review_reputation.review_count == 3
+        assert item.review_reputation.review_count == 5

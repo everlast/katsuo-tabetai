@@ -159,11 +159,11 @@ Required workflow, in this exact order:
    configured hotel radius. Never invent a URL, dish name, address, or coordinate.
 3. Every candidate must have an evidence_url whose page explicitly names that
    restaurant's katsuo dish. Prefer official restaurant pages, then official
-   tourism pages, reservation sites, and lastly review sites.
+   tourism pages, reservation sites, and lastly review sites including Google Maps.
 4. For every candidate, collect 5 to 10 distinct reviews published within the
-   last 18 months. The page must explicitly display each review's date and rating.
+   last 12 months. The page must explicitly display each review's date and rating.
    Prefer multiple review platforms when available. Never infer a date or rating.
-   Paraphrase each review in under 3000 characters, record 1 to 3 praised aspects,
+   Paraphrase each review in under 500 characters, record 1 to 3 praised aspects in 10 to 30 characters,
    and include any cautions the reviewer actually mentioned. Do not copy review text.
 5. Call save_restaurant_candidates exactly once with all verified candidates.
    Boolean dish features must be supported by the evidence page.
@@ -185,6 +185,7 @@ Required workflow, in this exact order:
         ],
         handoffs=[evaluation_handoff],
         model_settings=ModelSettings(tool_choice="required"),
+        reset_tool_choice=False,
         **shared_model,
     )
     return researcher, evaluator

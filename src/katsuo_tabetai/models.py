@@ -85,10 +85,10 @@ class RestaurantCandidateInput(BaseModel):
         description="Additional independent pages used to verify the restaurant.",
     )
     recent_reviews: list[RecentReview] = Field(
-        min_length=3,
-        max_length=8,
+        min_length=5,
+        max_length=10,
         description=(
-            "Three to eight distinct recent reviews with dates, ratings, paraphrased "
+            "Five to ten distinct recent reviews with dates, ratings, paraphrased "
             "summaries, and verifiable URLs."
         ),
     )

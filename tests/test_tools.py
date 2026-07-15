@@ -53,7 +53,7 @@ def test_function_tool_core_saves_structured_data_and_html(tmp_path) -> None:
     )
     assert len(top_five.restaurants) == 5
     assert all(item.recommendation_reason for item in top_five.restaurants)
-    assert all(len(item.recent_reviews) >= 3 for item in top_five.restaurants)
+    assert all(len(item.recent_reviews) >= 5 for item in top_five.restaurants)
     assert report_result["status"] == "completed"
 
 
@@ -79,10 +79,10 @@ def test_candidate_save_rejects_reviews_outside_recent_window(tmp_path) -> None:
         persist_restaurant_candidates(context, [candidate] * 5)
 
 
-def test_candidate_input_requires_at_least_three_reviews() -> None:
+def test_candidate_input_requires_at_least_five_reviews() -> None:
     candidate = candidate_input(1)
     payload = candidate.model_dump()
-    payload["recent_reviews"] = payload["recent_reviews"][:2]
+    payload["recent_reviews"] = payload["recent_reviews"][:4]
 
     with pytest.raises(ValidationError):
         RestaurantCandidateInput.model_validate(payload)
@@ -92,7 +92,13 @@ def test_candidate_save_rejects_duplicate_reviews(tmp_path) -> None:
     candidate = candidate_input(1)
     duplicate = candidate.recent_reviews[0]
     candidate = candidate.model_copy(
-        update={"recent_reviews": [duplicate, duplicate, candidate.recent_reviews[2]]}
+        update={
+            "recent_reviews": [
+                duplicate,
+                duplicate,
+                *candidate.recent_reviews[2:],
+            ]
+        }
     )
     context = KatsuoContext(
         hotel=HotelLocation(name="Hotel", latitude=33.5, longitude=133.5),

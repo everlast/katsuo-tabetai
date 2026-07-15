@@ -1,0 +1,203 @@
+from __future__ import annotations
+
+from html import escape
+from pathlib import Path
+
+from .models import EvidenceSourceType, TopFiveStore
+
+SOURCE_LABELS = {
+    EvidenceSourceType.OFFICIAL_RESTAURANT: "店舗公式",
+    EvidenceSourceType.OFFICIAL_TOURISM: "観光公式",
+    EvidenceSourceType.RESERVATION_SITE: "予約サイト",
+    EvidenceSourceType.REVIEW_SITE: "レビューサイト",
+}
+
+
+def _restaurant_row(restaurant) -> str:
+    evidence_url = escape(str(restaurant.evidence_url), quote=True)
+    features = ["カツオ料理の掲載あり"]
+    if restaurant.has_warayaki:
+        features.append("藁焼き")
+    if restaurant.has_shio_tataki:
+        features.append("塩たたき")
+    if restaurant.has_seasonal_katsuo:
+        features.append("旬の案内")
+    feature_html = "".join(f"<li>{escape(item)}</li>" for item in features)
+    score_width = min(100.0, max(0.0, restaurant.score))
+    source_label = SOURCE_LABELS[restaurant.evidence_source_type]
+    return f"""
+      <article class="restaurant" aria-labelledby="restaurant-{restaurant.rank}">
+        <div class="rank" aria-label="{restaurant.rank}位">
+          <span>RANK</span><strong>{restaurant.rank}</strong>
+        </div>
+        <div class="restaurant-main">
+          <div class="restaurant-heading">
+            <div>
+              <p class="source-type">{escape(source_label)}</p>
+              <h2 id="restaurant-{restaurant.rank}">{escape(restaurant.name)}</h2>
+            </div>
+            <div class="score" aria-label="100点満点中 {restaurant.score:.2f}点">
+              <strong>{restaurant.score:.2f}</strong><span>/ 100</span>
+            </div>
+          </div>
+          <div class="score-track" aria-hidden="true"><span style="width:{score_width:.2f}%"></span></div>
+          <p class="dish">{escape(restaurant.katsuo_dish)}</p>
+          <p class="address">{escape(restaurant.address)} · ホテルから {restaurant.distance_km:.2f} km</p>
+          <ul class="features">{feature_html}</ul>
+          <a class="evidence" href="{evidence_url}" target="_blank" rel="noreferrer">カツオ料理の根拠ページを開く</a>
+        </div>
+      </article>"""
+
+
+def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
+    rows = "\n".join(_restaurant_row(item) for item in report.restaurants)
+    generated = report.generated_at.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    html = f"""<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>高知駅前 カツオ TOP 5</title>
+  <style>
+    :root {{
+      --paper: #f7f8f5;
+      --white: #ffffff;
+      --ink: #17211f;
+      --muted: #62706c;
+      --line: #d5dcd8;
+      --ocean: #087f78;
+      --bonito: #c94432;
+      --market: #f1bf3a;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
+      letter-spacing: 0;
+    }}
+    a {{ color: inherit; }}
+    .masthead {{
+      border-top: 8px solid var(--bonito);
+      border-bottom: 1px solid var(--line);
+      background: var(--white);
+    }}
+    .masthead-inner, main, footer {{ width: min(1080px, calc(100% - 40px)); margin: 0 auto; }}
+    .masthead-inner {{ padding: 34px 0 28px; display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: end; }}
+    .eyebrow, .source-type {{
+      margin: 0 0 8px;
+      color: var(--ocean);
+      font: 700 12px/1.4 "SFMono-Regular", Menlo, monospace;
+      text-transform: uppercase;
+    }}
+    h1 {{
+      margin: 0;
+      font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
+      font-size: clamp(32px, 6vw, 64px);
+      line-height: 1.05;
+      font-weight: 700;
+      letter-spacing: 0;
+    }}
+    .stamp {{
+      min-width: 144px;
+      padding: 14px 16px;
+      border: 2px solid var(--ink);
+      box-shadow: 5px 5px 0 var(--market);
+      font: 700 13px/1.6 "SFMono-Regular", Menlo, monospace;
+    }}
+    .stamp strong {{ display: block; font-size: 20px; }}
+    .criteria {{
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border-bottom: 1px solid var(--line);
+      background: var(--ink);
+      color: var(--white);
+    }}
+    .criteria div {{ padding: 16px 20px; border-right: 1px solid #40504c; }}
+    .criteria div:last-child {{ border-right: 0; }}
+    .criteria span {{ display: block; color: #b9c5c1; font-size: 11px; }}
+    .criteria strong {{ display: block; margin-top: 3px; font-size: 14px; }}
+    main {{ padding: 32px 0 56px; }}
+    .restaurant {{
+      display: grid;
+      grid-template-columns: 104px 1fr;
+      margin-bottom: 16px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: var(--white);
+    }}
+    .rank {{
+      display: grid;
+      place-content: center;
+      min-height: 260px;
+      background: var(--bonito);
+      color: var(--white);
+      text-align: center;
+    }}
+    .rank span {{ font: 700 11px/1 "SFMono-Regular", Menlo, monospace; }}
+    .rank strong {{ font: 700 58px/1 "Hiragino Mincho ProN", "Yu Mincho", serif; }}
+    .restaurant-main {{ padding: 24px 28px 26px; min-width: 0; }}
+    .restaurant-heading {{ display: flex; justify-content: space-between; gap: 24px; align-items: start; }}
+    .restaurant h2 {{ margin: 0; font-size: 24px; line-height: 1.35; letter-spacing: 0; }}
+    .score {{ display: flex; align-items: baseline; white-space: nowrap; color: var(--ocean); }}
+    .score strong {{ font: 700 30px/1 "SFMono-Regular", Menlo, monospace; }}
+    .score span {{ margin-left: 4px; color: var(--muted); font-size: 12px; }}
+    .score-track {{ height: 4px; margin: 16px 0 20px; background: #e5e9e7; }}
+    .score-track span {{ display: block; height: 100%; background: var(--ocean); }}
+    .dish {{ margin: 0 0 7px; font-weight: 700; font-size: 17px; }}
+    .address {{ margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; }}
+    .features {{ display: flex; flex-wrap: wrap; gap: 7px; margin: 17px 0 19px; padding: 0; list-style: none; }}
+    .features li {{ padding: 5px 8px; border-left: 3px solid var(--market); background: #f5f5ef; font-size: 12px; }}
+    .evidence {{
+      display: inline-block;
+      padding-bottom: 3px;
+      border-bottom: 2px solid var(--bonito);
+      font-weight: 700;
+      font-size: 13px;
+      text-decoration: none;
+    }}
+    .evidence:hover {{ color: var(--bonito); }}
+    .evidence:focus-visible {{ outline: 3px solid var(--market); outline-offset: 4px; }}
+    footer {{ padding: 22px 0 36px; color: var(--muted); font-size: 12px; line-height: 1.8; }}
+    @media (max-width: 700px) {{
+      .masthead-inner {{ grid-template-columns: 1fr; }}
+      .stamp {{ width: max-content; max-width: 100%; }}
+      .criteria {{ grid-template-columns: 1fr; }}
+      .criteria div {{ border-right: 0; border-bottom: 1px solid #40504c; }}
+      .restaurant {{ grid-template-columns: 64px 1fr; }}
+      .rank {{ min-height: 100%; }}
+      .rank strong {{ font-size: 42px; }}
+      .restaurant-main {{ padding: 20px 18px 22px; }}
+      .restaurant-heading {{ display: block; }}
+      .score {{ margin-top: 14px; }}
+      .restaurant h2 {{ font-size: 20px; }}
+    }}
+    @media (prefers-reduced-motion: reduce) {{ * {{ scroll-behavior: auto; }} }}
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <div>
+        <p class="eyebrow">Kochi station katsuo guide</p>
+        <h1>高知駅前<br>カツオ TOP 5</h1>
+      </div>
+      <div class="stamp">DETERMINISTIC SCORE<strong>100 POINTS</strong></div>
+    </div>
+    <div class="criteria" aria-label="検索条件">
+      <div><span>基準地点</span><strong>{escape(report.hotel.name)}</strong></div>
+      <div><span>直線距離の上限</span><strong>{report.max_distance_km:.2f} km</strong></div>
+      <div><span>生成日時</span><strong>{escape(generated)}</strong></div>
+    </div>
+  </header>
+  <main>{rows}</main>
+  <footer>
+    距離は緯度経度からHaversine式で計算した直線距離です。営業日・提供メニューは変わるため、来店前に各根拠ページで最新情報を確認してください。
+  </footer>
+</body>
+</html>
+"""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(html, encoding="utf-8")

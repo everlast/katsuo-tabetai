@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-from katsuo_ai.context import KatsuoContext
-from katsuo_ai.models import HotelLocation, RestaurantCandidateInput, TopFiveStore
-from katsuo_ai.tools import create_top_five_report, persist_restaurant_candidates
+from katsuo_tabetai.context import KatsuoContext
+from katsuo_tabetai.models import (
+    HotelLocation,
+    RestaurantCandidateInput,
+    TopFiveStore,
+)
+from katsuo_tabetai.tools import create_top_five_report, persist_restaurant_candidates
 
 from test_scoring import make_candidate
 

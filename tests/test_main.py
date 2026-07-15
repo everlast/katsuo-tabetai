@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from katsuo_ai.main import load_project_environment
+from katsuo_tabetai.main import load_project_environment
 
 
 def test_load_project_environment_reads_dotenv(monkeypatch, tmp_path) -> None:

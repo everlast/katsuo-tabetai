@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from katsuo_ai.models import (
+from katsuo_tabetai.models import (
     EvidenceSourceType,
     HotelLocation,
     RestaurantCandidateInput,
 )
-from katsuo_ai.scoring import (
+from katsuo_tabetai.scoring import (
     apply_range_rule,
     haversine_km,
     rank_top_five,

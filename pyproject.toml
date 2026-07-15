@@ -1,5 +1,5 @@
 [project]
-name = "katsuo-ai"
+name = "katsuo-tabetai"
 version = "0.1.0"
 description = "OpenAI Agents SDK learning project for ranking katsuo restaurants near Kochi Station"
 readme = "README.md"
@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-katsuo-ai = "katsuo_ai.main:main"
+katsuo-tabetai = "katsuo_ai.main:main"
 
 [dependency-groups]
 dev = [

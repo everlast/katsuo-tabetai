@@ -11,7 +11,7 @@ from dotenv import find_dotenv, load_dotenv
 
 from .context import KatsuoContext
 from .models import HotelLocation
-from .workflow import run_katsuo_workflow
+from .workflow import NoValidResearchCandidatesError, run_katsuo_workflow
 
 DEFAULT_HOTEL_NAME = (
     "ザ クラウンパレス高知（2026年8月1日からANAクラウンプラザホテル高知 by IHG）"
@@ -90,7 +90,7 @@ def main() -> None:
     load_project_environment()
     try:
         exit_code = asyncio.run(_run(build_parser().parse_args()))
-    except AgentsException as exc:
+    except (AgentsException, NoValidResearchCandidatesError) as exc:
         raise SystemExit(f"Katsuo workflow failed: {exc}") from None
     raise SystemExit(exit_code)
 

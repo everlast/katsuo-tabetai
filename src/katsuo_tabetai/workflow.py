@@ -34,6 +34,10 @@ class EvaluationHandoffInput(BaseModel):
     )
 
 
+class NoValidResearchCandidatesError(RuntimeError):
+    """Raised when research leaves no enabled action for the storage phase."""
+
+
 class RunAudit(BaseModel):
     runner_calls: int
     web_search_calls: int
@@ -284,6 +288,18 @@ async def run_storage_and_evaluation_phase(
     context: KatsuoContext,
     max_turns: int,
 ) -> Any:
+    if not context.pending_candidates:
+        rejection_summary = "; ".join(context.candidate_rejections[:3])
+        if len(context.candidate_rejections) > 3:
+            rejection_summary += (
+                f"; and {len(context.candidate_rejections) - 3} more rejection(s)"
+            )
+        detail = f" Rejections: {rejection_summary}" if rejection_summary else ""
+        raise NoValidResearchCandidatesError(
+            "No restaurant candidates passed recent-review validation, so the "
+            "storage and evaluation phase cannot start."
+            f"{detail}"
+        )
     return await Runner.run(
         starting_agent=agent,
         input=(

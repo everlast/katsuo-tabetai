@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from agents import WebSearchTool
@@ -29,14 +30,18 @@ def test_workflow_has_real_handoff_and_required_tools() -> None:
 
 
 def test_candidate_tool_schema_uses_supported_url_strings() -> None:
-    candidate_schema = save_restaurant_candidates.params_json_schema["$defs"][
-        "RestaurantCandidateInput"
-    ]
+    tool_schema = save_restaurant_candidates.params_json_schema
+    candidate_schema = tool_schema["$defs"]["RestaurantCandidateInput"]
     properties = candidate_schema["properties"]
+    review_schema = tool_schema["$defs"]["RecentReview"]["properties"]
 
     assert properties["evidence_url"]["type"] == "string"
     assert "format" not in properties["evidence_url"]
     assert properties["source_urls"]["items"] == {"type": "string"}
+    assert properties["recent_reviews"]["minItems"] == 3
+    assert review_schema["review_url"]["type"] == "string"
+    assert review_schema["published_at"]["type"] == "string"
+    assert '"format"' not in json.dumps(tool_schema)
 
 
 def test_run_item_audit_requires_search_function_tools_and_handoff(tmp_path) -> None:

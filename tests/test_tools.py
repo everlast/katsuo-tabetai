@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
+
+import pytest
+from pydantic import ValidationError
+
 from katsuo_tabetai.context import KatsuoContext
 from katsuo_tabetai.models import (
     HotelLocation,
     RestaurantCandidateInput,
     TopFiveStore,
 )
-from katsuo_tabetai.tools import create_top_five_report, persist_restaurant_candidates
+from katsuo_tabetai.tools import (
+    RECENT_REVIEW_MAX_AGE_DAYS,
+    create_top_five_report,
+    persist_restaurant_candidates,
+)
 
 from test_scoring import make_candidate
 
@@ -43,4 +52,53 @@ def test_function_tool_core_saves_structured_data_and_html(tmp_path) -> None:
         context.top_five_path.read_text(encoding="utf-8")
     )
     assert len(top_five.restaurants) == 5
+    assert all(item.recommendation_reason for item in top_five.restaurants)
+    assert all(len(item.recent_reviews) >= 3 for item in top_five.restaurants)
     assert report_result["status"] == "completed"
+
+
+def test_candidate_save_rejects_reviews_outside_recent_window(tmp_path) -> None:
+    candidate = candidate_input(1)
+    stale_reviews = [
+        review.model_copy(
+            update={
+                "published_at": date.today()
+                - timedelta(days=RECENT_REVIEW_MAX_AGE_DAYS + 1)
+            }
+        )
+        for review in candidate.recent_reviews
+    ]
+    candidate = candidate.model_copy(update={"recent_reviews": stale_reviews})
+    context = KatsuoContext(
+        hotel=HotelLocation(name="Hotel", latitude=33.5, longitude=133.5),
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="older than"):
+        persist_restaurant_candidates(context, [candidate] * 5)
+
+
+def test_candidate_input_requires_at_least_three_reviews() -> None:
+    candidate = candidate_input(1)
+    payload = candidate.model_dump()
+    payload["recent_reviews"] = payload["recent_reviews"][:2]
+
+    with pytest.raises(ValidationError):
+        RestaurantCandidateInput.model_validate(payload)
+
+
+def test_candidate_save_rejects_duplicate_reviews(tmp_path) -> None:
+    candidate = candidate_input(1)
+    duplicate = candidate.recent_reviews[0]
+    candidate = candidate.model_copy(
+        update={"recent_reviews": [duplicate, duplicate, candidate.recent_reviews[2]]}
+    )
+    context = KatsuoContext(
+        hotel=HotelLocation(name="Hotel", latitude=33.5, longitude=133.5),
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="duplicate review"):
+        persist_restaurant_candidates(context, [candidate] * 5)

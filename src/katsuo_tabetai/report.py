@@ -13,6 +13,29 @@ SOURCE_LABELS = {
 }
 
 
+def _review_row(review) -> str:
+    review_url = escape(str(review.review_url), quote=True)
+    positives = "".join(
+        f'<span class="positive-point">{escape(point)}</span>'
+        for point in review.positive_points
+    )
+    cautions = ""
+    if review.caution_points:
+        caution_text = "・".join(review.caution_points)
+        cautions = f'<p class="review-caution">注意: {escape(caution_text)}</p>'
+    return f"""
+              <li class="review-item">
+                <div class="review-meta">
+                  <strong>{review.rating:.1f} / 5</strong>
+                  <span>{escape(review.source_name)} · {review.published_at.isoformat()}</span>
+                </div>
+                <p>{escape(review.summary)}</p>
+                <div class="review-points">{positives}</div>
+                {cautions}
+                <a href="{review_url}" target="_blank" rel="noreferrer">レビューの根拠を開く</a>
+              </li>"""
+
+
 def _restaurant_row(restaurant) -> str:
     evidence_url = escape(str(restaurant.evidence_url), quote=True)
     features = ["カツオ料理の掲載あり"]
@@ -23,8 +46,10 @@ def _restaurant_row(restaurant) -> str:
     if restaurant.has_seasonal_katsuo:
         features.append("旬の案内")
     feature_html = "".join(f"<li>{escape(item)}</li>" for item in features)
+    review_html = "".join(_review_row(review) for review in restaurant.recent_reviews)
     score_width = min(100.0, max(0.0, restaurant.score))
     source_label = SOURCE_LABELS[restaurant.evidence_source_type]
+    reputation = restaurant.review_reputation
     return f"""
       <article class="restaurant" aria-labelledby="restaurant-{restaurant.rank}">
         <div class="rank" aria-label="{restaurant.rank}位">
@@ -41,10 +66,29 @@ def _restaurant_row(restaurant) -> str:
             </div>
           </div>
           <div class="score-track" aria-hidden="true"><span style="width:{score_width:.2f}%"></span></div>
+          <section class="recommendation" aria-labelledby="reason-{restaurant.rank}">
+            <h3 id="reason-{restaurant.rank}">この店を推す理由</h3>
+            <p>{escape(restaurant.recommendation_reason)}</p>
+          </section>
           <p class="dish">{escape(restaurant.katsuo_dish)}</p>
           <p class="address">{escape(restaurant.address)} · ホテルから {restaurant.distance_km:.2f} km</p>
           <ul class="features">{feature_html}</ul>
           <a class="evidence" href="{evidence_url}" target="_blank" rel="noreferrer">カツオ料理の根拠ページを開く</a>
+          <section class="review-section" aria-labelledby="reviews-{restaurant.rank}">
+            <div class="review-heading">
+              <div>
+                <p class="review-label">RECENT REVIEWS</p>
+                <h3 id="reviews-{restaurant.rank}">新着レビューから見た評判</h3>
+              </div>
+              <dl class="review-stats">
+                <div><dt>平均評価</dt><dd>{reputation.average_rating:.2f} / 5</dd></div>
+                <div><dt>確認件数</dt><dd>{reputation.review_count}件</dd></div>
+                <div><dt>情報源</dt><dd>{reputation.source_count}サイト</dd></div>
+              </dl>
+            </div>
+            <p class="review-score">総合点のうちレビュー評判: {restaurant.score_breakdown.recent_reviews:.2f} / 25点</p>
+            <ol class="reviews">{review_html}</ol>
+          </section>
         </div>
       </article>"""
 
@@ -146,6 +190,9 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
     .score span {{ margin-left: 4px; color: var(--muted); font-size: 12px; }}
     .score-track {{ height: 4px; margin: 16px 0 20px; background: #e5e9e7; }}
     .score-track span {{ display: block; height: 100%; background: var(--ocean); }}
+    .recommendation {{ margin: 0 0 20px; padding: 14px 16px; border-left: 4px solid var(--bonito); background: #fff6f3; }}
+    .recommendation h3 {{ margin: 0 0 6px; font-size: 13px; }}
+    .recommendation p {{ margin: 0; font-size: 14px; line-height: 1.8; }}
     .dish {{ margin: 0 0 7px; font-weight: 700; font-size: 17px; }}
     .address {{ margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; }}
     .features {{ display: flex; flex-wrap: wrap; gap: 7px; margin: 17px 0 19px; padding: 0; list-style: none; }}
@@ -160,6 +207,25 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
     }}
     .evidence:hover {{ color: var(--bonito); }}
     .evidence:focus-visible {{ outline: 3px solid var(--market); outline-offset: 4px; }}
+    .review-section {{ margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--line); }}
+    .review-heading {{ display: flex; justify-content: space-between; gap: 24px; align-items: end; }}
+    .review-label {{ margin: 0 0 5px; color: var(--bonito); font: 700 11px/1.4 "SFMono-Regular", Menlo, monospace; }}
+    .review-heading h3 {{ margin: 0; font-size: 18px; }}
+    .review-stats {{ display: flex; gap: 18px; margin: 0; }}
+    .review-stats div {{ min-width: 76px; }}
+    .review-stats dt {{ color: var(--muted); font-size: 10px; }}
+    .review-stats dd {{ margin: 3px 0 0; font: 700 14px/1.3 "SFMono-Regular", Menlo, monospace; }}
+    .review-score {{ margin: 12px 0 0; color: var(--muted); font-size: 11px; }}
+    .reviews {{ margin: 18px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }}
+    .review-item {{ padding: 16px 0; border-bottom: 1px solid var(--line); }}
+    .review-meta {{ display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }}
+    .review-meta strong {{ color: var(--ocean); font: 700 14px/1.4 "SFMono-Regular", Menlo, monospace; }}
+    .review-meta span {{ color: var(--muted); font-size: 11px; text-align: right; }}
+    .review-item > p {{ margin: 8px 0; font-size: 13px; line-height: 1.75; }}
+    .review-points {{ display: flex; flex-wrap: wrap; gap: 6px; }}
+    .positive-point {{ padding: 3px 7px; background: #e9f4f1; color: #155f59; font-size: 11px; }}
+    .review-item .review-caution {{ margin: 8px 0; color: #854237; font-size: 11px; }}
+    .review-item a {{ display: inline-block; margin-top: 9px; color: var(--ocean); font-size: 11px; font-weight: 700; }}
     footer {{ padding: 22px 0 36px; color: var(--muted); font-size: 12px; line-height: 1.8; }}
     @media (max-width: 700px) {{
       .masthead-inner {{ grid-template-columns: 1fr; }}
@@ -173,6 +239,10 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
       .restaurant-heading {{ display: block; }}
       .score {{ margin-top: 14px; }}
       .restaurant h2 {{ font-size: 20px; }}
+      .review-heading {{ display: block; }}
+      .review-stats {{ margin-top: 14px; gap: 12px; flex-wrap: wrap; }}
+      .review-meta {{ display: block; }}
+      .review-meta span {{ display: block; margin-top: 4px; text-align: left; }}
     }}
     @media (prefers-reduced-motion: reduce) {{ * {{ scroll-behavior: auto; }} }}
   </style>
@@ -194,7 +264,7 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
   </header>
   <main>{rows}</main>
   <footer>
-    距離は緯度経度からHaversine式で計算した直線距離です。営業日・提供メニューは変わるため、来店前に各根拠ページで最新情報を確認してください。
+    距離は緯度経度からHaversine式で計算した直線距離です。レビューは生成日時から18か月以内に公開されたものを要約し、原文ではなく根拠リンクを掲載しています。営業日・提供メニュー・評判は変わるため、来店前に各ページで最新情報を確認してください。
   </footer>
 </body>
 </html>

@@ -32,3 +32,8 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
     for restaurant in restaurants:
         assert restaurant.name in html
         assert str(restaurant.evidence_url) in html
+        assert restaurant.recommendation_reason in html
+        assert "新着レビューから見た評判" in html
+        for review in restaurant.recent_reviews:
+            assert str(review.review_url) in html
+            assert review.summary in html

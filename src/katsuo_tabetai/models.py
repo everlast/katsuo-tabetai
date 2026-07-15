@@ -143,6 +143,12 @@ class ResearchBatch(BaseModel):
     candidates: list[RestaurantCandidateInput] = Field(min_length=5, max_length=30)
 
 
+class RestaurantCacheEntry(BaseModel):
+    schema_version: int = 1
+    updated_at: datetime
+    candidate: RestaurantCandidateInput
+
+
 class RestaurantCandidate(RestaurantCandidateInput):
     distance_km: float = Field(ge=0)
     within_range: bool

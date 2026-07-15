@@ -14,7 +14,9 @@ from katsuo_tabetai.models import (
 from katsuo_tabetai.tools import (
     MIN_REVIEW_SOURCE_SITES,
     RECENT_REVIEW_MAX_AGE_DAYS,
+    cache_restaurant_candidates,
     create_top_five_report,
+    load_cached_restaurant_candidates,
     partition_candidates_by_review_validity,
     persist_restaurant_candidates,
 )
@@ -138,6 +140,96 @@ def test_research_partition_rejects_only_candidate_with_stale_review() -> None:
     assert len(rejections) == 1
     assert rejected_candidate.name in rejections[0]
     assert "older than" in rejections[0]
+
+
+def test_research_partition_keeps_candidate_with_five_reviews_after_filtering() -> None:
+    candidate = candidate_input(1)
+    stale_review = candidate.recent_reviews[0].model_copy(
+        update={
+            "published_at": date.today()
+            - timedelta(days=RECENT_REVIEW_MAX_AGE_DAYS + 1)
+        }
+    )
+    extra_review = candidate.recent_reviews[-1].model_copy(
+        update={
+            "review_url": type(candidate.recent_reviews[-1].review_url)(
+                "https://extra-reviews.example/restaurant/1/review/6"
+            ),
+            "published_at": date.today() - timedelta(days=10),
+            "summary": "An additional recent review",
+        }
+    )
+    candidate = candidate.model_copy(
+        update={
+            "recent_reviews": [
+                stale_review,
+                *candidate.recent_reviews[1:],
+                extra_review,
+            ]
+        }
+    )
+
+    accepted, rejections = partition_candidates_by_review_validity(
+        [candidate],
+        date.today(),
+    )
+
+    assert rejections == []
+    assert len(accepted) == 1
+    assert len(accepted[0].recent_reviews) == 5
+    assert stale_review not in accepted[0].recent_reviews
+
+
+def test_restaurant_cache_writes_and_reloads_one_file_per_store(tmp_path) -> None:
+    context = KatsuoContext(
+        hotel=HotelLocation(
+            name="Test Hotel",
+            latitude=33.566927593644714,
+            longitude=133.54104073018118,
+        ),
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    candidates = [candidate_input(index) for index in range(1, 4)]
+
+    written = cache_restaurant_candidates(context, candidates)
+    updated_candidate = candidates[0].model_copy(
+        update={"katsuo_dish": "Updated katsuo dish"}
+    )
+    cache_restaurant_candidates(context, [updated_candidate])
+    loaded, rejections = load_cached_restaurant_candidates(context, date.today())
+
+    cache_files = list(context.restaurant_cache_dir.glob("*.json"))
+    assert written == 3
+    assert len(cache_files) == 3
+    assert rejections == []
+    assert [candidate.name for candidate in loaded] == [
+        candidate.name for candidate in candidates
+    ]
+    assert loaded[0].katsuo_dish == "Updated katsuo dish"
+    assert all('"candidate"' in path.read_text(encoding="utf-8") for path in cache_files)
+
+
+def test_restaurant_cache_bootstraps_from_existing_aggregate_store(tmp_path) -> None:
+    context = KatsuoContext(
+        hotel=HotelLocation(
+            name="Test Hotel",
+            latitude=33.566927593644714,
+            longitude=133.54104073018118,
+        ),
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    persist_restaurant_candidates(
+        context,
+        [candidate_input(index) for index in range(1, 7)],
+    )
+
+    loaded, rejections = load_cached_restaurant_candidates(context, date.today())
+
+    assert rejections == []
+    assert len(loaded) == 6
+    assert len(list(context.restaurant_cache_dir.glob("*.json"))) == 6
 
 
 def test_candidate_input_requires_at_least_five_reviews() -> None:

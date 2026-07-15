@@ -58,6 +58,23 @@ def _validate_recent_reviews(
             fingerprints.add(fingerprint)
 
 
+def partition_candidates_by_review_validity(
+    candidates: list[RestaurantCandidateInput],
+    as_of: date,
+) -> tuple[list[RestaurantCandidateInput], list[str]]:
+    """Separate candidates that can be persisted from invalid research output."""
+    accepted: list[RestaurantCandidateInput] = []
+    rejections: list[str] = []
+    for candidate in candidates:
+        try:
+            _validate_recent_reviews([candidate], as_of)
+        except ValueError as exc:
+            rejections.append(str(exc))
+        else:
+            accepted.append(candidate)
+    return accepted, rejections
+
+
 def persist_restaurant_candidates(
     context: KatsuoContext,
     candidates: list[RestaurantCandidateInput],

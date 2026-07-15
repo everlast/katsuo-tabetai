@@ -16,6 +16,7 @@ SOURCE_LABELS = {
 
 def _review_row(review) -> str:
     review_url = escape(str(review.review_url), quote=True)
+    review_month = review.published_at.strftime("%Y-%m")
     positives = "".join(
         f'<span class="positive-point">{escape(point)}</span>'
         for point in review.positive_points
@@ -28,7 +29,7 @@ def _review_row(review) -> str:
               <li class="review-item">
                 <div class="review-meta">
                   <strong>{review.rating:.1f} / 5</strong>
-                  <span>{escape(review.source_name)} · {review.published_at.isoformat()}</span>
+                  <span>{escape(review.source_name)} · {review_month}</span>
                 </div>
                 <p>{escape(review.summary)}</p>
                 <div class="review-points">{positives}</div>
@@ -268,7 +269,7 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
   </header>
   <main>{rows}</main>
   <footer>
-    距離は緯度経度からHaversine式で計算した直線距離です。レビューは生成日時から365日以内に公開されたものを要約し、原文ではなく根拠リンクを掲載しています。営業日・提供メニュー・評判は変わるため、来店前に各ページで最新情報を確認してください。
+    距離は緯度経度からHaversine式で計算した直線距離です。レビューは生成日時から365日以内に公開・訪問されたものを要約し、原文ではなく根拠リンクを掲載しています。根拠ページに年月までしかない場合は月初として新着判定し、画面には年月まで表示します。営業日・提供メニュー・評判は変わるため、来店前に各ページで最新情報を確認してください。
   </footer>
 </body>
 </html>

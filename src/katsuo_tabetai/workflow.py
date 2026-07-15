@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from agents import (
@@ -18,7 +19,12 @@ from pydantic import BaseModel, Field
 
 from .context import KatsuoContext
 from .models import ResearchBatch
-from .tools import evaluate_and_render_top_five, save_restaurant_candidates
+from .tools import (
+    RECENT_REVIEW_MAX_AGE_DAYS,
+    evaluate_and_render_top_five,
+    partition_candidates_by_review_validity,
+    save_restaurant_candidates,
+)
 
 
 class EvaluationHandoffInput(BaseModel):
@@ -31,6 +37,7 @@ class EvaluationHandoffInput(BaseModel):
 class RunAudit(BaseModel):
     runner_calls: int
     web_search_calls: int
+    rejected_research_candidates: int
     function_tool_calls: int
     handoff_items: int
     candidate_save_calls: int
@@ -90,6 +97,7 @@ def audit_run_items(
     audit = RunAudit(
         runner_calls=len(run_results),
         web_search_calls=web_search_calls,
+        rejected_research_candidates=len(context.candidate_rejections),
         function_tool_calls=function_tool_calls,
         handoff_items=handoff_items,
         candidate_save_calls=context.candidate_save_calls,
@@ -205,12 +213,14 @@ Required workflow:
 3. Every candidate must have an evidence_url whose page explicitly names that
    restaurant's katsuo dish. Prefer official restaurant pages, then official
    tourism pages, reservation sites, and lastly review sites including Google Maps.
-4. For every candidate, collect 5 to 10 distinct reviews published within the
-   last 12 months. The page must explicitly display each review's date and rating.
-   Prefer multiple review platforms when available. Never infer a date or rating.
-   Paraphrase each review in under 500 characters, record 1 to 3 praised aspects
-   in 10 to 30 characters, and include cautions the reviewer actually mentioned.
-   Do not copy review text.
+4. For every candidate, collect 5 to 10 distinct reviews published or visited
+   within the last 12 months. The page must explicitly display each review's date
+   or visit month and its exact rating. When only YYYY-MM is displayed, store
+   YYYY-MM-01 in published_at for recency calculations. Never infer a year, month,
+   or rating. Prefer multiple review platforms when available. Paraphrase each
+   review in under 500 characters, record 1 to 3 praised aspects in 10 to 30
+   characters, and include cautions the reviewer actually mentioned. Do not copy
+   review text.
 5. Return the verified candidates as the required structured output. Do not rank them.
 """.strip(),
         tools=[
@@ -246,14 +256,25 @@ async def run_web_research_phase(
     context: KatsuoContext,
     max_turns: int,
 ) -> Any:
+    as_of = datetime.now(timezone.utc).date()
+    oldest_allowed = as_of - timedelta(days=RECENT_REVIEW_MAX_AGE_DAYS)
     result = await Runner.run(
         starting_agent=agent,
-        input=prompt,
+        input=(
+            f"{prompt}\n口コミの公開日または訪問月は {oldest_allowed.isoformat()} から "
+            f"{as_of.isoformat()} まで（両端を含む）のものだけを採用してください。"
+            "日まで表示されない場合は、その年月の1日（YYYY-MM-01）として保存してください。"
+        ),
         context=context,
         max_turns=max_turns,
     )
     research_batch = ResearchBatch.model_validate(result.final_output)
-    context.pending_candidates = list(research_batch.candidates)
+    accepted, rejections = partition_candidates_by_review_validity(
+        list(research_batch.candidates),
+        as_of,
+    )
+    context.pending_candidates = accepted
+    context.candidate_rejections = rejections
     return result
 
 

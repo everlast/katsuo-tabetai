@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import os
+import sys
 
+import pytest
+from agents import UserError
+
+from katsuo_tabetai import main as main_module
 from katsuo_tabetai.main import build_parser, load_project_environment
 
 
@@ -43,3 +48,18 @@ def test_load_project_environment_preserves_existing_value(
     load_project_environment()
 
     assert os.environ["OPENAI_API_KEY"] == "from-shell"
+
+
+def test_main_reports_agents_sdk_errors_without_traceback(monkeypatch) -> None:
+    async def fail_run(args):
+        raise UserError("candidate validation failed")
+
+    monkeypatch.setattr(main_module, "load_project_environment", lambda: False)
+    monkeypatch.setattr(main_module, "_run", fail_run)
+    monkeypatch.setattr(sys, "argv", ["katsuo-tabetai"])
+
+    with pytest.raises(
+        SystemExit,
+        match="Katsuo workflow failed: candidate validation failed",
+    ):
+        main_module.main()

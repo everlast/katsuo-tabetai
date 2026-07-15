@@ -44,7 +44,11 @@ class RecentReview(BaseModel):
         description="A page where this specific review can be verified.",
     )
     published_at: FunctionToolDate = Field(
-        description="The explicitly displayed publication date in YYYY-MM-DD form.",
+        description=(
+            "The explicitly displayed review publication or visit date. If the "
+            "source displays only YYYY-MM, normalize it to YYYY-MM-01. Never infer "
+            "the displayed year or month."
+        ),
     )
     rating: float = Field(
         ge=1,
@@ -89,8 +93,8 @@ class RestaurantCandidateInput(BaseModel):
         min_length=5,
         max_length=10,
         description=(
-            "Five to ten distinct recent reviews with dates, ratings, paraphrased "
-            "summaries, and verifiable URLs."
+            "Five to ten distinct recent reviews with displayed dates or visit "
+            "months, ratings, paraphrased summaries, and verifiable URLs."
         ),
     )
     has_warayaki: bool

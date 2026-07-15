@@ -28,6 +28,8 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
 
     html = output.read_text(encoding="utf-8")
     assert "高知駅前" in html
+    assert "100 POINTS" in html
+    assert "/ 25点" in html
     assert html.count('class="restaurant"') == 5
     for restaurant in restaurants:
         assert restaurant.name in html

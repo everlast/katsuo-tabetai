@@ -32,7 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hotel-name", default=DEFAULT_HOTEL_NAME)
     parser.add_argument("--hotel-lat", type=float, default=DEFAULT_HOTEL_LATITUDE)
     parser.add_argument("--hotel-lon", type=float, default=DEFAULT_HOTEL_LONGITUDE)
-    parser.add_argument("--max-distance-km", type=float, default=2.5)
+    parser.add_argument("--max-distance-km", type=float, default=5.0)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
     parser.add_argument(
         "--model",

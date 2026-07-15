@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
-from agents import WebSearchTool
+from agents import RunContextWrapper, WebSearchTool
 
 from katsuo_tabetai.context import KatsuoContext
 from katsuo_tabetai.models import HotelLocation
@@ -27,6 +28,30 @@ def test_workflow_has_real_handoff_and_required_tools() -> None:
         for tool in evaluator.tools
     )
     assert evaluator.tool_use_behavior == "stop_on_first_tool"
+
+
+def test_evaluation_handoff_is_hidden_until_candidates_are_saved(tmp_path) -> None:
+    context = KatsuoContext(
+        hotel=HotelLocation(name="Hotel", latitude=33.5, longitude=133.5),
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    researcher, _ = build_agents()
+    evaluation_handoff = researcher.handoffs[0]
+    assert callable(evaluation_handoff.is_enabled)
+
+    async def is_enabled() -> bool:
+        return await evaluation_handoff.is_enabled(
+            RunContextWrapper(context=context), researcher
+        )
+
+    assert asyncio.run(is_enabled()) is False
+
+    context.candidates_path.write_text("{}", encoding="utf-8")
+    assert asyncio.run(is_enabled()) is False
+
+    context.candidates_saved = True
+    assert asyncio.run(is_enabled()) is True
 
 
 def test_candidate_tool_schema_uses_supported_url_strings() -> None:

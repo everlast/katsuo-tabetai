@@ -88,6 +88,7 @@ def persist_restaurant_candidates(
         store.model_dump_json(indent=2),
         encoding="utf-8",
     )
+    context.candidates_saved = True
     return {
         "status": "saved",
         "path": str(context.candidates_path),

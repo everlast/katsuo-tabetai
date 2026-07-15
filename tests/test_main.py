@@ -13,6 +13,7 @@ def test_parser_uses_crown_palais_kochi_as_default_hotel() -> None:
     )
     assert args.hotel_lat == 33.5577702
     assert args.hotel_lon == 133.5339508
+    assert args.max_distance_km == 5.0
 
 
 def test_load_project_environment_reads_dotenv(monkeypatch, tmp_path) -> None:

@@ -140,7 +140,7 @@ def build_agents(
         name="Katsuo Research Agent",
         instructions=prompt_with_handoff_instructions(
             """
-You research restaurants serving excellent katsuo near Kochi Station, Japan.
+You research restaurants serving excellent katsuo near the configured hotel in Kochi, Japan.
 
 Required workflow, in this exact order:
 1. Your first action must be WebSearchTool. Search current restaurant, official,

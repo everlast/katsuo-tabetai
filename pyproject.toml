@@ -1,7 +1,7 @@
 [project]
 name = "katsuo-tabetai"
 version = "0.1.0"
-description = "OpenAI Agents SDK learning project for ranking katsuo restaurants near Kochi Station"
+description = "OpenAI Agents SDK learning project for ranking katsuo restaurants near a hotel in Kochi"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

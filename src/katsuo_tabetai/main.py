@@ -12,9 +12,11 @@ from .context import KatsuoContext
 from .models import HotelLocation
 from .workflow import run_katsuo_workflow
 
-DEFAULT_HOTEL_NAME = "JRクレメントイン高知"
-DEFAULT_HOTEL_LATITUDE = 33.566927593644714
-DEFAULT_HOTEL_LONGITUDE = 133.54104073018118
+DEFAULT_HOTEL_NAME = (
+    "ザ クラウンパレス高知（2026年8月1日からANAクラウンプラザホテル高知 by IHG）"
+)
+DEFAULT_HOTEL_LATITUDE = 33.5577702
+DEFAULT_HOTEL_LONGITUDE = 133.5339508
 
 
 def load_project_environment() -> bool:
@@ -25,7 +27,7 @@ def load_project_environment() -> bool:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Create a sourced katsuo restaurant TOP 5 near Kochi Station."
+        description="Create a sourced katsuo restaurant TOP 5 near a hotel in Kochi."
     )
     parser.add_argument("--hotel-name", default=DEFAULT_HOTEL_NAME)
     parser.add_argument("--hotel-lat", type=float, default=DEFAULT_HOTEL_LATITUDE)

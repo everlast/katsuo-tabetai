@@ -105,7 +105,7 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>高知駅前 カツオ TOP 5</title>
+  <title>ホテル周辺 カツオ TOP 5</title>
   <style>
     :root {{
       --paper: #f7f8f5;
@@ -255,8 +255,8 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
   <header class="masthead">
     <div class="masthead-inner">
       <div>
-        <p class="eyebrow">Kochi station katsuo guide</p>
-        <h1>高知駅前<br>カツオ TOP 5</h1>
+        <p class="eyebrow">Kochi hotel katsuo guide</p>
+        <h1>ホテル周辺<br>カツオ TOP 5</h1>
       </div>
       <div class="stamp">DETERMINISTIC SCORE<strong>{TOTAL_MAX_POINTS:g} POINTS</strong></div>
     </div>

@@ -4,7 +4,20 @@ from html import escape
 from pathlib import Path
 
 from .models import EvidenceSourceType, TopFiveStore
-from .scoring import RECENT_REVIEWS_MAX_POINTS, TOTAL_MAX_POINTS
+from .scoring import (
+    DISTANCE_MAX_POINTS,
+    EVIDENCE_MAX_POINTS,
+    INDEPENDENT_SOURCES_MAX_POINTS,
+    KATSUO_FEATURES_MAX_POINTS,
+    RECENT_REVIEWS_MAX_POINTS,
+    REVIEW_COUNT_FOR_MAX_POINTS,
+    REVIEW_COUNT_MAX_POINTS,
+    REVIEW_RATING_MAX_POINTS,
+    REVIEW_RATING_SCALE_MAX,
+    REVIEW_SOURCE_COUNT_FOR_MAX_POINTS,
+    REVIEW_SOURCE_MAX_POINTS,
+    TOTAL_MAX_POINTS,
+)
 
 SOURCE_LABELS = {
     EvidenceSourceType.OFFICIAL_RESTAURANT: "店舗公式",
@@ -12,6 +25,64 @@ SOURCE_LABELS = {
     EvidenceSourceType.RESERVATION_SITE: "予約サイト",
     EvidenceSourceType.REVIEW_SITE: "レビューサイト",
 }
+
+
+def _score_breakdown_row(label: str, value: float, maximum) -> str:
+    maximum_float = float(maximum)
+    width = min(100.0, max(0.0, value / maximum_float * 100))
+    return f"""
+              <div class="score-breakdown-row">
+                <dt>{escape(label)}</dt>
+                <dd>
+                  <span class="score-breakdown-value">{value:.2f} / {maximum_float:g}</span>
+                  <span class="mini-track" aria-hidden="true"><span style="width:{width:.2f}%"></span></span>
+                </dd>
+              </div>"""
+
+
+def _score_breakdown(restaurant) -> str:
+    breakdown = restaurant.score_breakdown
+    rows = [
+        ("カツオ料理の根拠種別", breakdown.evidence, EVIDENCE_MAX_POINTS),
+        ("カツオ料理の特徴", breakdown.katsuo_features, KATSUO_FEATURES_MAX_POINTS),
+        (
+            "独立した料理根拠URL",
+            breakdown.independent_sources,
+            INDEPENDENT_SOURCES_MAX_POINTS,
+        ),
+        ("新着レビューの評判", breakdown.recent_reviews, RECENT_REVIEWS_MAX_POINTS),
+        ("ホテルからの距離", breakdown.distance, DISTANCE_MAX_POINTS),
+    ]
+    return "".join(
+        _score_breakdown_row(label, value, maximum) for label, value, maximum in rows
+    )
+
+
+def _review_score_breakdown(restaurant) -> str:
+    reputation = restaurant.review_reputation
+    rating_points = (
+        reputation.average_rating
+        / float(REVIEW_RATING_SCALE_MAX)
+        * float(REVIEW_RATING_MAX_POINTS)
+    )
+    volume_points = (
+        min(reputation.review_count, REVIEW_COUNT_FOR_MAX_POINTS)
+        / REVIEW_COUNT_FOR_MAX_POINTS
+        * float(REVIEW_COUNT_MAX_POINTS)
+    )
+    source_points = (
+        min(reputation.source_count, REVIEW_SOURCE_COUNT_FOR_MAX_POINTS)
+        / REVIEW_SOURCE_COUNT_FOR_MAX_POINTS
+        * float(REVIEW_SOURCE_MAX_POINTS)
+    )
+    rows = [
+        ("平均評価", rating_points, REVIEW_RATING_MAX_POINTS),
+        ("確認件数", volume_points, REVIEW_COUNT_MAX_POINTS),
+        ("情報源数", source_points, REVIEW_SOURCE_MAX_POINTS),
+    ]
+    return "".join(
+        _score_breakdown_row(label, value, maximum) for label, value, maximum in rows
+    )
 
 
 def _review_row(review) -> str:
@@ -49,6 +120,8 @@ def _restaurant_row(restaurant) -> str:
         features.append("旬の案内")
     feature_html = "".join(f"<li>{escape(item)}</li>" for item in features)
     review_html = "".join(_review_row(review) for review in restaurant.recent_reviews)
+    score_breakdown_html = _score_breakdown(restaurant)
+    review_score_breakdown_html = _review_score_breakdown(restaurant)
     score_width = min(
         100.0,
         max(0.0, restaurant.score / float(TOTAL_MAX_POINTS) * 100),
@@ -71,6 +144,8 @@ def _restaurant_row(restaurant) -> str:
             </div>
           </div>
           <div class="score-track" aria-hidden="true"><span style="width:{score_width:.2f}%"></span></div>
+          <dl class="score-breakdown" aria-label="総合スコアの評価項目別内訳">{score_breakdown_html}
+          </dl>
           <section class="recommendation" aria-labelledby="reason-{restaurant.rank}">
             <h3 id="reason-{restaurant.rank}">この店を推す理由</h3>
             <p>{escape(restaurant.recommendation_reason)}</p>
@@ -92,6 +167,8 @@ def _restaurant_row(restaurant) -> str:
               </dl>
             </div>
             <p class="review-score">総合点のうちレビュー評判: {restaurant.score_breakdown.recent_reviews:.2f} / {RECENT_REVIEWS_MAX_POINTS:g}点</p>
+            <dl class="score-breakdown review-score-breakdown" aria-label="レビュー評判スコアの評価項目別内訳">{review_score_breakdown_html}
+            </dl>
             <ol class="reviews">{review_html}</ol>
           </section>
         </div>
@@ -195,6 +272,34 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
     .score span {{ margin-left: 4px; color: var(--muted); font-size: 12px; }}
     .score-track {{ height: 4px; margin: 16px 0 20px; background: #e5e9e7; }}
     .score-track span {{ display: block; height: 100%; background: var(--ocean); }}
+    .score-breakdown {{
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px 12px;
+      margin: 0 0 22px;
+    }}
+    .score-breakdown-row {{
+      min-width: 0;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+    }}
+    .score-breakdown dt {{
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.45;
+    }}
+    .score-breakdown dd {{ margin: 5px 0 0; }}
+    .score-breakdown-value {{
+      display: block;
+      font: 700 12px/1.2 "SFMono-Regular", Menlo, monospace;
+    }}
+    .mini-track {{
+      display: block;
+      height: 3px;
+      margin-top: 7px;
+      background: #e5e9e7;
+    }}
+    .mini-track span {{ display: block; height: 100%; background: var(--ocean); }}
     .recommendation {{ margin: 0 0 20px; padding: 14px 16px; border-left: 4px solid var(--bonito); background: #fff6f3; }}
     .recommendation h3 {{ margin: 0 0 6px; font-size: 13px; }}
     .recommendation p {{ margin: 0; font-size: 14px; line-height: 1.8; }}
@@ -221,6 +326,11 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
     .review-stats dt {{ color: var(--muted); font-size: 10px; }}
     .review-stats dd {{ margin: 3px 0 0; font: 700 14px/1.3 "SFMono-Regular", Menlo, monospace; }}
     .review-score {{ margin: 12px 0 0; color: var(--muted); font-size: 11px; }}
+    .review-score-breakdown {{
+      grid-template-columns: repeat(3, minmax(0, 160px));
+      margin-top: 12px;
+      margin-bottom: 0;
+    }}
     .reviews {{ margin: 18px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }}
     .review-item {{ padding: 16px 0; border-bottom: 1px solid var(--line); }}
     .review-meta {{ display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }}
@@ -243,6 +353,8 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
       .restaurant-main {{ padding: 20px 18px 22px; }}
       .restaurant-heading {{ display: block; }}
       .score {{ margin-top: 14px; }}
+      .score-breakdown {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .review-score-breakdown {{ grid-template-columns: 1fr; }}
       .restaurant h2 {{ font-size: 20px; }}
       .review-heading {{ display: block; }}
       .review-stats {{ margin-top: 14px; gap: 12px; flex-wrap: wrap; }}

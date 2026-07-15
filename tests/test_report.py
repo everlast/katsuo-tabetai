@@ -30,12 +30,27 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
     assert "ホテル周辺" in html
     assert "100 POINTS" in html
     assert "/ 25点" in html
+    assert 'aria-label="総合スコアの評価項目別内訳"' in html
+    assert 'aria-label="レビュー評判スコアの評価項目別内訳"' in html
+    for label in (
+        "カツオ料理の根拠種別",
+        "カツオ料理の特徴",
+        "独立した料理根拠URL",
+        "新着レビューの評判",
+        "ホテルからの距離",
+        "平均評価",
+        "確認件数",
+        "情報源数",
+    ):
+        assert label in html
     assert html.count('class="restaurant"') == 5
     for restaurant in restaurants:
         assert restaurant.name in html
         assert str(restaurant.evidence_url) in html
         assert restaurant.recommendation_reason in html
         assert "新着レビューから見た評判" in html
+        assert f"{restaurant.score_breakdown.evidence:.2f} / 25" in html
+        assert f"{restaurant.score_breakdown.recent_reviews:.2f} / 25" in html
         for review in restaurant.recent_reviews:
             assert str(review.review_url) in html
             assert review.summary in html

@@ -6,7 +6,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
-from agents import RunContextWrapper, WebSearchTool
+from agents import ModelBehaviorError, RunContextWrapper, WebSearchTool
 from agents.tool_context import ToolContext
 
 from katsuo_tabetai.context import KatsuoContext
@@ -17,6 +17,7 @@ from katsuo_tabetai.tools import (
     save_restaurant_candidates,
 )
 from katsuo_tabetai.workflow import (
+    InvalidResearchOutputError,
     NoValidResearchCandidatesError,
     audit_run_items,
     build_agents,
@@ -24,7 +25,7 @@ from katsuo_tabetai.workflow import (
     run_web_research_phase,
     run_katsuo_workflow,
 )
-from test_scoring import make_candidate
+from test_scoring import HOTEL, make_candidate
 
 
 def test_workflow_has_real_handoff_and_required_tools() -> None:
@@ -242,7 +243,7 @@ def test_workflow_continues_after_web_research_final_output(
     monkeypatch,
 ) -> None:
     context = KatsuoContext(
-        hotel=HotelLocation(name="Hotel", latitude=33.5, longitude=133.5),
+        hotel=HOTEL,
         max_distance_km=2.5,
         output_dir=tmp_path,
     )
@@ -323,6 +324,241 @@ def test_workflow_continues_after_web_research_final_output(
     assert context.pending_candidates == candidates
     assert outcome.last_agent == "Katsuo Evaluation Agent"
     assert outcome.audit.runner_calls == 2
+
+
+def test_workflow_retries_web_research_when_candidate_pool_is_insufficient(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    context = KatsuoContext(
+        hotel=HOTEL,
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    agents = build_agents()
+    web_researcher = agents.web_researcher
+    evaluator = agents.evaluator
+    duplicate_candidate = RestaurantCandidateInput.model_validate(
+        make_candidate(1).model_dump(exclude={"distance_km", "within_range"})
+    )
+    first_batch = [duplicate_candidate] * 5
+    second_batch = [
+        RestaurantCandidateInput.model_validate(
+            make_candidate(index).model_dump(exclude={"distance_km", "within_range"})
+        )
+        for index in range(2, 7)
+    ]
+
+    monkeypatch.setattr(
+        "katsuo_tabetai.workflow.build_agents",
+        lambda model=None: agents,
+    )
+    monkeypatch.setattr(
+        "katsuo_tabetai.workflow.trace",
+        lambda **kwargs: nullcontext(),
+    )
+    called_agents: list[str] = []
+    web_inputs: list[str] = []
+
+    async def fake_run(*, starting_agent, input, context, max_turns):
+        called_agents.append(starting_agent.name)
+        if starting_agent is web_researcher:
+            web_inputs.append(input)
+            candidates = first_batch if len(web_inputs) == 1 else second_batch
+            return SimpleNamespace(
+                final_output=ResearchBatch(candidates=candidates),
+                last_agent=web_researcher,
+                new_items=[
+                    SimpleNamespace(
+                        type="tool_call_item",
+                        raw_item={"type": "web_search_call"},
+                    )
+                ],
+            )
+
+        context.candidate_save_calls = 1
+        context.candidates_saved = True
+        context.evaluation_tool_calls = 1
+        context.handoff_calls = 1
+        return SimpleNamespace(
+            final_output="completed",
+            last_agent=evaluator,
+            new_items=[
+                SimpleNamespace(
+                    type="tool_call_item",
+                    raw_item={
+                        "type": "function_call",
+                        "name": "save_restaurant_candidates",
+                    },
+                ),
+                SimpleNamespace(
+                    type="handoff_call_item", raw_item={"type": "function_call"}
+                ),
+                SimpleNamespace(
+                    type="handoff_output_item",
+                    raw_item={"type": "function_call_output"},
+                ),
+                SimpleNamespace(
+                    type="tool_call_item",
+                    raw_item={
+                        "type": "function_call",
+                        "name": "evaluate_and_render_top_five",
+                    },
+                ),
+            ],
+        )
+
+    monkeypatch.setattr("katsuo_tabetai.workflow.Runner.run", fake_run)
+
+    outcome = asyncio.run(run_katsuo_workflow(context, research_attempts=2))
+
+    assert called_agents == [
+        "Katsuo Web Research Agent",
+        "Katsuo Web Research Agent",
+        "Katsuo Research Agent",
+    ]
+    assert len(context.pending_candidates) == 6
+    assert "保存条件を満たしていません" in web_inputs[1]
+    assert outcome.last_agent == "Katsuo Evaluation Agent"
+    assert outcome.audit.runner_calls == 3
+    assert outcome.audit.web_search_calls == 2
+
+
+def test_workflow_retries_web_research_after_malformed_structured_output(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    context = KatsuoContext(
+        hotel=HOTEL,
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    agents = build_agents()
+    web_researcher = agents.web_researcher
+    evaluator = agents.evaluator
+    candidates = [
+        RestaurantCandidateInput.model_validate(
+            make_candidate(index).model_dump(exclude={"distance_km", "within_range"})
+        )
+        for index in range(1, 6)
+    ]
+
+    monkeypatch.setattr(
+        "katsuo_tabetai.workflow.build_agents",
+        lambda model=None: agents,
+    )
+    monkeypatch.setattr(
+        "katsuo_tabetai.workflow.trace",
+        lambda **kwargs: nullcontext(),
+    )
+    called_agents: list[str] = []
+    web_inputs: list[str] = []
+
+    async def fake_run(*, starting_agent, input, context, max_turns):
+        called_agents.append(starting_agent.name)
+        if starting_agent is web_researcher:
+            web_inputs.append(input)
+            if len(web_inputs) == 1:
+                raise ModelBehaviorError("Invalid JSON when parsing {broken")
+            return SimpleNamespace(
+                final_output=ResearchBatch(candidates=candidates),
+                last_agent=web_researcher,
+                new_items=[
+                    SimpleNamespace(
+                        type="tool_call_item",
+                        raw_item={"type": "web_search_call"},
+                    )
+                ],
+            )
+
+        context.candidate_save_calls = 1
+        context.candidates_saved = True
+        context.evaluation_tool_calls = 1
+        context.handoff_calls = 1
+        return SimpleNamespace(
+            final_output="completed",
+            last_agent=evaluator,
+            new_items=[
+                SimpleNamespace(
+                    type="tool_call_item",
+                    raw_item={
+                        "type": "function_call",
+                        "name": "save_restaurant_candidates",
+                    },
+                ),
+                SimpleNamespace(
+                    type="handoff_call_item", raw_item={"type": "function_call"}
+                ),
+                SimpleNamespace(
+                    type="handoff_output_item",
+                    raw_item={"type": "function_call_output"},
+                ),
+                SimpleNamespace(
+                    type="tool_call_item",
+                    raw_item={
+                        "type": "function_call",
+                        "name": "evaluate_and_render_top_five",
+                    },
+                ),
+            ],
+        )
+
+    monkeypatch.setattr("katsuo_tabetai.workflow.Runner.run", fake_run)
+
+    outcome = asyncio.run(run_katsuo_workflow(context, research_attempts=2))
+
+    assert called_agents == [
+        "Katsuo Web Research Agent",
+        "Katsuo Web Research Agent",
+        "Katsuo Research Agent",
+    ]
+    assert "ResearchBatchとして解釈できない壊れたJSON" in web_inputs[1]
+    assert outcome.last_agent == "Katsuo Evaluation Agent"
+    assert outcome.audit.runner_calls == 2
+    assert outcome.audit.web_search_calls == 1
+
+
+def test_workflow_reports_malformed_structured_output_after_retry_limit(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    context = KatsuoContext(
+        hotel=HOTEL,
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    agents = build_agents()
+    web_researcher = agents.web_researcher
+
+    monkeypatch.setattr(
+        "katsuo_tabetai.workflow.build_agents",
+        lambda model=None: agents,
+    )
+    monkeypatch.setattr(
+        "katsuo_tabetai.workflow.trace",
+        lambda **kwargs: nullcontext(),
+    )
+    called_agents: list[str] = []
+
+    async def fake_run(*, starting_agent, input, context, max_turns):
+        called_agents.append(starting_agent.name)
+        if starting_agent is web_researcher:
+            raise ModelBehaviorError("Invalid JSON when parsing " + ("x" * 1000))
+        raise AssertionError("storage phase should not run")
+
+    monkeypatch.setattr("katsuo_tabetai.workflow.Runner.run", fake_run)
+
+    with pytest.raises(
+        InvalidResearchOutputError,
+        match="malformed structured JSON after 2 attempt",
+    ) as exc_info:
+        asyncio.run(run_katsuo_workflow(context, research_attempts=2))
+
+    assert called_agents == [
+        "Katsuo Web Research Agent",
+        "Katsuo Web Research Agent",
+    ]
+    assert len(str(exc_info.value)) < 340
 
 
 def test_web_research_phase_excludes_invalid_candidates(

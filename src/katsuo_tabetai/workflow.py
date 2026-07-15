@@ -7,6 +7,7 @@ from typing import Any
 from agents import (
     Agent,
     ModelSettings,
+    ModelBehaviorError,
     RunContextWrapper,
     Runner,
     WebSearchTool,
@@ -21,9 +22,13 @@ from .context import KatsuoContext
 from .models import ResearchBatch
 from .tools import (
     RECENT_REVIEW_MAX_AGE_DAYS,
+    CandidatePoolSummary,
+    deduplicate_restaurant_candidates,
     evaluate_and_render_top_five,
+    insufficient_candidate_pool_message,
     partition_candidates_by_review_validity,
     save_restaurant_candidates,
+    summarize_candidate_pool,
 )
 
 
@@ -36,6 +41,14 @@ class EvaluationHandoffInput(BaseModel):
 
 class NoValidResearchCandidatesError(RuntimeError):
     """Raised when research leaves no enabled action for the storage phase."""
+
+
+class InsufficientResearchCandidatesError(RuntimeError):
+    """Raised when research did not find enough unique in-range restaurants."""
+
+
+class InvalidResearchOutputError(RuntimeError):
+    """Raised when web research repeatedly returns malformed structured output."""
 
 
 class RunAudit(BaseModel):
@@ -153,6 +166,72 @@ def _model_override(model: str | None) -> dict[str, str]:
     return {"model": model} if model else {}
 
 
+def _format_rejection_detail(rejections: list[str]) -> str:
+    rejection_summary = "; ".join(rejections[:3])
+    if len(rejections) > 3:
+        rejection_summary += f"; and {len(rejections) - 3} more rejection(s)"
+    return f" Rejections: {rejection_summary}" if rejection_summary else ""
+
+
+def _build_research_retry_prompt(
+    base_prompt: str,
+    context: KatsuoContext,
+    summary: CandidatePoolSummary,
+) -> str:
+    existing_candidates = "\n".join(
+        (
+            f"- {candidate.name} / {candidate.address} / "
+            f"{candidate.latitude:.7f}, {candidate.longitude:.7f}"
+        )
+        for candidate in context.pending_candidates[:20]
+    )
+    if not existing_candidates:
+        existing_candidates = "- none"
+    rejection_detail = "\n".join(
+        f"- {rejection}" for rejection in context.candidate_rejections[:10]
+    )
+    if not rejection_detail:
+        rejection_detail = "- none"
+    return f"""
+{base_prompt}
+
+前回までの調査では保存条件を満たしていません。
+コード判定では {summary.unique_candidates} unique / {summary.within_range} in range です。
+既存候補は再提出せず、別店舗・別住所の候補を追加で調査してください。
+同じチェーンでも支店が違う場合は、支店名・住所・座標を明確に分けてください。
+
+Existing accepted candidates:
+{existing_candidates}
+
+Rejected candidates:
+{rejection_detail}
+""".strip()
+
+
+def _build_invalid_output_retry_prompt(base_prompt: str, attempt: int) -> str:
+    return f"""
+{base_prompt}
+
+前回のWeb調査出力はResearchBatchとして解釈できない壊れたJSONでした。
+再調査し、必ずスキーマに合う構造化出力だけを返してください。
+特に文字列の引用符、配列、オブジェクトの閉じ括弧を壊さないでください。
+これは構造化出力の再試行 {attempt} 回目です。
+""".strip()
+
+
+def _format_invalid_research_output_error(
+    attempts: int,
+    error: ModelBehaviorError,
+) -> str:
+    message = str(error).splitlines()[0]
+    if len(message) > 240:
+        message = f"{message[:237]}..."
+    return (
+        "Web research returned malformed structured JSON "
+        f"after {attempts} attempt(s). Last error: {message}"
+    )
+
+
 def build_evaluator(model: str | None = None) -> Agent[KatsuoContext]:
     return Agent[KatsuoContext](
         name="Katsuo Evaluation Agent",
@@ -260,6 +339,7 @@ async def run_web_research_phase(
     prompt: str,
     context: KatsuoContext,
     max_turns: int,
+    merge_with_existing: bool = False,
 ) -> Any:
     as_of = datetime.now(timezone.utc).date()
     oldest_allowed = as_of - timedelta(days=RECENT_REVIEW_MAX_AGE_DAYS)
@@ -278,8 +358,14 @@ async def run_web_research_phase(
         list(research_batch.candidates),
         as_of,
     )
-    context.pending_candidates = accepted
-    context.candidate_rejections = rejections
+    if merge_with_existing:
+        context.pending_candidates = deduplicate_restaurant_candidates(
+            [*context.pending_candidates, *accepted]
+        )
+        context.candidate_rejections.extend(rejections)
+    else:
+        context.pending_candidates = deduplicate_restaurant_candidates(accepted)
+        context.candidate_rejections = rejections
     return result
 
 
@@ -289,16 +375,16 @@ async def run_storage_and_evaluation_phase(
     max_turns: int,
 ) -> Any:
     if not context.pending_candidates:
-        rejection_summary = "; ".join(context.candidate_rejections[:3])
-        if len(context.candidate_rejections) > 3:
-            rejection_summary += (
-                f"; and {len(context.candidate_rejections) - 3} more rejection(s)"
-            )
-        detail = f" Rejections: {rejection_summary}" if rejection_summary else ""
         raise NoValidResearchCandidatesError(
             "No restaurant candidates passed recent-review validation, so the "
             "storage and evaluation phase cannot start."
-            f"{detail}"
+            f"{_format_rejection_detail(context.candidate_rejections)}"
+        )
+    summary = summarize_candidate_pool(context, context.pending_candidates)
+    if not summary.is_ready:
+        raise InsufficientResearchCandidatesError(
+            insufficient_candidate_pool_message(summary, context.max_distance_km)
+            + _format_rejection_detail(context.candidate_rejections)
         )
     return await Runner.run(
         starting_agent=agent,
@@ -315,7 +401,10 @@ async def run_katsuo_workflow(
     context: KatsuoContext,
     model: str | None = None,
     max_turns: int = 24,
+    research_attempts: int = 3,
 ) -> WorkflowOutcome:
+    if research_attempts < 1:
+        raise ValueError("research_attempts must be at least 1.")
     agents = build_agents(model=model)
     trace_id = gen_trace_id()
     prompt = (
@@ -332,12 +421,35 @@ async def run_katsuo_workflow(
             "max_distance_km": str(context.max_distance_km),
         },
     ):
-        research_result = await run_web_research_phase(
-            agent=agents.web_researcher,
-            prompt=prompt,
-            context=context,
-            max_turns=max_turns,
-        )
+        research_results = []
+        current_prompt = prompt
+        for attempt in range(1, research_attempts + 1):
+            try:
+                research_result = await run_web_research_phase(
+                    agent=agents.web_researcher,
+                    prompt=current_prompt,
+                    context=context,
+                    max_turns=max_turns,
+                    merge_with_existing=bool(research_results),
+                )
+            except ModelBehaviorError as exc:
+                if attempt >= research_attempts:
+                    raise InvalidResearchOutputError(
+                        _format_invalid_research_output_error(attempt, exc)
+                    ) from exc
+                current_prompt = _build_invalid_output_retry_prompt(prompt, attempt + 1)
+                continue
+
+            research_results.append(research_result)
+            summary = summarize_candidate_pool(context, context.pending_candidates)
+            if summary.is_ready:
+                break
+            if attempt < research_attempts:
+                current_prompt = _build_research_retry_prompt(
+                    prompt,
+                    context,
+                    summary,
+                )
         result = await run_storage_and_evaluation_phase(
             agent=agents.researcher,
             context=context,
@@ -349,7 +461,7 @@ async def run_katsuo_workflow(
             "Acceptance check failed: result.last_agent is "
             f"{result.last_agent.name!r}, expected {agents.evaluator.name!r}."
         )
-    audit = audit_run_items(result, context, prior_results=(research_result,))
+    audit = audit_run_items(result, context, prior_results=tuple(research_results))
     return WorkflowOutcome(
         final_output=result.final_output,
         last_agent=result.last_agent.name,

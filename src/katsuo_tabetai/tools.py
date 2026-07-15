@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
 from agents import AgentBase, RunContextWrapper, function_tool
@@ -8,24 +9,110 @@ from agents import AgentBase, RunContextWrapper, function_tool
 from .context import KatsuoContext
 from .models import (
     CandidateStore,
+    RestaurantCandidate,
     RestaurantCandidateInput,
     TopFiveStore,
 )
 from .report import render_top_five_html
-from .scoring import apply_range_rule, normalized_url_host, rank_top_five
+from .scoring import apply_range_rule, haversine_km, normalized_url_host, rank_top_five
 
 RECENT_REVIEW_MAX_AGE_DAYS = 365
 MIN_REVIEW_SOURCE_SITES = 2
+MIN_IN_RANGE_CANDIDATES = 5
+DUPLICATE_LOCATION_THRESHOLD_KM = 0.05
 
 
-def _deduplicate(
+@dataclass(frozen=True)
+class CandidatePoolSummary:
+    candidates: list[RestaurantCandidate]
+    unique_candidates: int
+    within_range: int
+    outside_range: int
+
+    @property
+    def is_ready(self) -> bool:
+        return (
+            self.unique_candidates >= MIN_IN_RANGE_CANDIDATES
+            and self.within_range >= MIN_IN_RANGE_CANDIDATES
+        )
+
+
+def _normalize_identity_text(value: str) -> str:
+    return "".join(value.casefold().split())
+
+
+def _is_same_restaurant_location(
+    existing: RestaurantCandidateInput,
+    candidate: RestaurantCandidateInput,
+) -> bool:
+    if _normalize_identity_text(existing.name) != _normalize_identity_text(
+        candidate.name
+    ):
+        return False
+    if _normalize_identity_text(existing.address) == _normalize_identity_text(
+        candidate.address
+    ):
+        return True
+    distance = haversine_km(
+        existing.latitude,
+        existing.longitude,
+        candidate.latitude,
+        candidate.longitude,
+    )
+    return distance <= DUPLICATE_LOCATION_THRESHOLD_KM
+
+
+def deduplicate_restaurant_candidates(
     candidates: list[RestaurantCandidateInput],
 ) -> list[RestaurantCandidateInput]:
-    unique: dict[str, RestaurantCandidateInput] = {}
+    unique: list[RestaurantCandidateInput] = []
     for candidate in candidates:
-        key = "".join(candidate.name.casefold().split())
-        unique.setdefault(key, candidate)
-    return list(unique.values())
+        if any(
+            _is_same_restaurant_location(existing, candidate) for existing in unique
+        ):
+            continue
+        unique.append(candidate)
+    return unique
+
+
+def _summarize_deduplicated_candidate_pool(
+    context: KatsuoContext,
+    candidates: list[RestaurantCandidateInput],
+) -> CandidatePoolSummary:
+    ranged = [
+        apply_range_rule(candidate, context.hotel, context.max_distance_km)
+        for candidate in candidates
+    ]
+    within_range = sum(candidate.within_range for candidate in ranged)
+    return CandidatePoolSummary(
+        candidates=ranged,
+        unique_candidates=len(ranged),
+        within_range=within_range,
+        outside_range=len(ranged) - within_range,
+    )
+
+
+def summarize_candidate_pool(
+    context: KatsuoContext,
+    candidates: list[RestaurantCandidateInput],
+) -> CandidatePoolSummary:
+    return _summarize_deduplicated_candidate_pool(
+        context,
+        deduplicate_restaurant_candidates(candidates),
+    )
+
+
+def insufficient_candidate_pool_message(
+    summary: CandidatePoolSummary,
+    max_distance_km: float,
+) -> str:
+    return (
+        "Save rejected: provide at least "
+        f"{MIN_IN_RANGE_CANDIDATES} unique restaurants inside the "
+        f"{max_distance_km:.2f} km range. "
+        f"Received {summary.unique_candidates} unique and "
+        f"{summary.within_range} in range."
+    )
 
 
 def _validate_recent_reviews(
@@ -89,26 +176,20 @@ def persist_restaurant_candidates(
     context: KatsuoContext,
     candidates: list[RestaurantCandidateInput],
 ) -> dict[str, object]:
-    deduplicated = _deduplicate(candidates)
+    deduplicated = deduplicate_restaurant_candidates(candidates)
     generated_at = datetime.now(timezone.utc)
     _validate_recent_reviews(deduplicated, generated_at.date())
-    ranged = [
-        apply_range_rule(candidate, context.hotel, context.max_distance_km)
-        for candidate in deduplicated
-    ]
-    eligible_count = sum(candidate.within_range for candidate in ranged)
-    if len(ranged) < 5 or eligible_count < 5:
+    summary = _summarize_deduplicated_candidate_pool(context, deduplicated)
+    if not summary.is_ready:
         raise ValueError(
-            "Save rejected: provide at least 5 unique restaurants inside the "
-            f"{context.max_distance_km:.2f} km range. "
-            f"Received {len(ranged)} unique and {eligible_count} in range."
+            insufficient_candidate_pool_message(summary, context.max_distance_km)
         )
 
     store = CandidateStore(
         generated_at=generated_at,
         hotel=context.hotel,
         max_distance_km=context.max_distance_km,
-        candidates=ranged,
+        candidates=summary.candidates,
     )
     context.output_dir.mkdir(parents=True, exist_ok=True)
     context.candidates_path.write_text(
@@ -119,9 +200,9 @@ def persist_restaurant_candidates(
     return {
         "status": "saved",
         "path": str(context.candidates_path),
-        "unique_candidates": len(ranged),
-        "within_range": eligible_count,
-        "outside_range": len(ranged) - eligible_count,
+        "unique_candidates": summary.unique_candidates,
+        "within_range": summary.within_range,
+        "outside_range": summary.outside_range,
         "next_action": "handoff to the evaluation agent",
     }
 

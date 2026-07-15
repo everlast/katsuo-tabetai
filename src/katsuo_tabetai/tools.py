@@ -14,7 +14,7 @@ from .models import (
 from .report import render_top_five_html
 from .scoring import apply_range_rule, rank_top_five
 
-RECENT_REVIEW_MAX_AGE_DAYS = 548
+RECENT_REVIEW_MAX_AGE_DAYS = 365
 
 
 def _deduplicate(
@@ -109,7 +109,7 @@ def save_restaurant_candidates(
     Args:
         candidates: Restaurants found by web search. Every entry must have a page
             that explicitly names its katsuo dish, map coordinates, and at least
-            three distinct reviews published within the last 18 months.
+            five distinct reviews published within the last 12 months.
     """
     context = wrapper.context
     context.candidate_save_calls += 1

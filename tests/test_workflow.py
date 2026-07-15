@@ -27,6 +27,8 @@ def test_workflow_has_real_handoff_and_required_tools() -> None:
         getattr(tool, "name", "") == "evaluate_and_render_top_five"
         for tool in evaluator.tools
     )
+    assert researcher.model_settings.tool_choice == "required"
+    assert researcher.reset_tool_choice is False
     assert evaluator.tool_use_behavior == "stop_on_first_tool"
 
 
@@ -63,7 +65,8 @@ def test_candidate_tool_schema_uses_supported_url_strings() -> None:
     assert properties["evidence_url"]["type"] == "string"
     assert "format" not in properties["evidence_url"]
     assert properties["source_urls"]["items"] == {"type": "string"}
-    assert properties["recent_reviews"]["minItems"] == 3
+    assert properties["recent_reviews"]["minItems"] == 5
+    assert properties["recent_reviews"]["maxItems"] == 10
     assert review_schema["review_url"]["type"] == "string"
     assert review_schema["published_at"]["type"] == "string"
     assert '"format"' not in json.dumps(tool_schema)

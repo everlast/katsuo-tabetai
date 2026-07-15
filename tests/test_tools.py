@@ -59,6 +59,36 @@ def test_function_tool_core_saves_structured_data_and_html(tmp_path) -> None:
     assert report_result["status"] == "completed"
 
 
+def test_candidate_save_keeps_same_name_at_distinct_locations(tmp_path) -> None:
+    context = KatsuoContext(
+        hotel=HotelLocation(
+            name="Test Hotel",
+            latitude=33.566927593644714,
+            longitude=133.54104073018118,
+        ),
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    branch_a = candidate_input(1).model_copy(update={"name": "Same Chain"})
+    branch_b = candidate_input(2).model_copy(
+        update={
+            "name": "Same Chain",
+            "address": "Kochi distinct branch",
+            "latitude": branch_a.latitude + 0.01,
+        }
+    )
+    candidates = [
+        branch_a,
+        branch_b,
+        *[candidate_input(index) for index in range(3, 6)],
+    ]
+
+    save_result = persist_restaurant_candidates(context, candidates)
+
+    assert save_result["unique_candidates"] == 5
+    assert save_result["within_range"] == 5
+
+
 def test_candidate_save_rejects_reviews_outside_recent_window(tmp_path) -> None:
     candidate = candidate_input(1)
     stale_reviews = [

@@ -11,7 +11,12 @@ from dotenv import find_dotenv, load_dotenv
 
 from .context import KatsuoContext
 from .models import HotelLocation
-from .workflow import NoValidResearchCandidatesError, run_katsuo_workflow
+from .workflow import (
+    InsufficientResearchCandidatesError,
+    InvalidResearchOutputError,
+    NoValidResearchCandidatesError,
+    run_katsuo_workflow,
+)
 
 DEFAULT_HOTEL_NAME = (
     "ザ クラウンパレス高知（2026年8月1日からANAクラウンプラザホテル高知 by IHG）"
@@ -41,6 +46,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional model override. By default the Agents SDK setting is used.",
     )
     parser.add_argument("--max-turns", type=int, default=24)
+    parser.add_argument(
+        "--research-attempts",
+        type=int,
+        default=3,
+        help=(
+            "Maximum Web research attempts before failing on insufficient "
+            "validated in-range candidates."
+        ),
+    )
     return parser
 
 
@@ -52,6 +66,8 @@ async def _run(args: argparse.Namespace) -> int:
         )
     if args.max_distance_km <= 0:
         raise SystemExit("--max-distance-km must be greater than zero.")
+    if args.research_attempts <= 0:
+        raise SystemExit("--research-attempts must be greater than zero.")
 
     context = KatsuoContext(
         hotel=HotelLocation(
@@ -66,6 +82,7 @@ async def _run(args: argparse.Namespace) -> int:
         context=context,
         model=args.model,
         max_turns=args.max_turns,
+        research_attempts=args.research_attempts,
     )
     print(
         json.dumps(
@@ -90,7 +107,12 @@ def main() -> None:
     load_project_environment()
     try:
         exit_code = asyncio.run(_run(build_parser().parse_args()))
-    except (AgentsException, NoValidResearchCandidatesError) as exc:
+    except (
+        AgentsException,
+        InsufficientResearchCandidatesError,
+        InvalidResearchOutputError,
+        NoValidResearchCandidatesError,
+    ) as exc:
         raise SystemExit(f"Katsuo workflow failed: {exc}") from None
     raise SystemExit(exit_code)
 

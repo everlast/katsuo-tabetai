@@ -6,8 +6,12 @@ from pathlib import Path
 from .models import EvidenceSourceType, TopFiveStore
 from .scoring import (
     DISTANCE_MAX_POINTS,
+    EVIDENCE_POINTS,
     EVIDENCE_MAX_POINTS,
+    INDEPENDENT_SOURCE_MAX_DOMAINS,
+    INDEPENDENT_SOURCE_POINTS_PER_DOMAIN,
     INDEPENDENT_SOURCES_MAX_POINTS,
+    KATSUO_DISH_NAME_POINTS,
     KATSUO_FEATURES_MAX_POINTS,
     RECENT_REVIEWS_MAX_POINTS,
     REVIEW_COUNT_FOR_MAX_POINTS,
@@ -16,7 +20,10 @@ from .scoring import (
     REVIEW_RATING_SCALE_MAX,
     REVIEW_SOURCE_COUNT_FOR_MAX_POINTS,
     REVIEW_SOURCE_MAX_POINTS,
+    SEASONAL_KATSUO_POINTS,
+    SHIO_TATAKI_POINTS,
     TOTAL_MAX_POINTS,
+    WARAYAKI_POINTS,
 )
 
 SOURCE_LABELS = {
@@ -433,8 +440,21 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
     }}
     .score-note h2 {{ margin: 0 0 8px; font-size: 17px; line-height: 1.5; }}
     .score-note p {{ margin: 0; color: var(--muted); font-size: 12px; line-height: 1.8; }}
-    .score-note p + p {{ margin-top: 4px; }}
     .score-note strong {{ color: var(--ink); }}
+    .score-note-items {{
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      margin: 14px 0;
+      border-top: 1px solid #c9d7d2;
+      border-bottom: 1px solid #c9d7d2;
+    }}
+    .score-note-items > div {{ min-width: 0; padding: 12px; border-right: 1px solid #c9d7d2; }}
+    .score-note-items > div:first-child {{ padding-left: 0; }}
+    .score-note-items > div:last-child {{ padding-right: 0; border-right: 0; }}
+    .score-note-items dt {{ font-size: 12px; line-height: 1.5; }}
+    .score-note-items dt strong {{ display: block; }}
+    .score-note-items dt span {{ display: block; margin-top: 2px; color: var(--ocean); font-size: 10px; font-weight: 700; }}
+    .score-note-items dd {{ margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.7; }}
     footer {{ padding: 22px 0 36px; color: var(--muted); font-size: 12px; line-height: 1.8; }}
     @media (max-width: 700px) {{
       .masthead-inner {{ grid-template-columns: 1fr; }}
@@ -452,6 +472,15 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
         align-items: center;
         min-height: 52px;
       }}
+      .score-note-items {{ grid-template-columns: 1fr; }}
+      .score-note-items > div,
+      .score-note-items > div:first-child,
+      .score-note-items > div:last-child {{
+        padding: 11px 0;
+        border-right: 0;
+        border-bottom: 1px solid #c9d7d2;
+      }}
+      .score-note-items > div:last-child {{ border-bottom: 0; }}
       .restaurant {{ grid-template-columns: 64px 1fr; }}
       .rank {{ min-height: 100%; }}
       .rank strong {{ font-size: 42px; }}
@@ -497,8 +526,30 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
     <aside class="score-note" aria-labelledby="score-note-title">
       <p class="score-note-label">SCORING NOTE</p>
       <h2 id="score-note-title">スコアはどう決まる？</h2>
-      <p><strong>{TOTAL_MAX_POINTS:g}点満点</strong>で、カツオ料理の根拠種別 {EVIDENCE_MAX_POINTS:g}点、料理の特徴 {KATSUO_FEATURES_MAX_POINTS:g}点、独立した根拠URL {INDEPENDENT_SOURCES_MAX_POINTS:g}点、新着レビュー {RECENT_REVIEWS_MAX_POINTS:g}点、ホテルからの距離 {DISTANCE_MAX_POINTS:g}点を合算しています。</p>
-      <p>レビューは平均評価・確認件数・情報源数で評価し、距離点はホテルから離れるほど検索上限に向けて直線的に減点します。保存した事実だけを使うため、同じ入力なら順位も同じです。</p>
+      <p><strong>{TOTAL_MAX_POINTS:g}点満点</strong>で、保存済みの事実を次の5つの観点から評価しています。</p>
+      <dl class="score-note-items">
+        <div>
+          <dt><strong>カツオ料理の根拠種別</strong><span>最大 {EVIDENCE_MAX_POINTS:g}点</span></dt>
+          <dd>情報元の信頼性を評価。店舗公式 {EVIDENCE_POINTS[EvidenceSourceType.OFFICIAL_RESTAURANT]:g}点、観光公式 {EVIDENCE_POINTS[EvidenceSourceType.OFFICIAL_TOURISM]:g}点、予約サイト {EVIDENCE_POINTS[EvidenceSourceType.RESERVATION_SITE]:g}点、レビューサイト {EVIDENCE_POINTS[EvidenceSourceType.REVIEW_SITE]:g}点です。</dd>
+        </div>
+        <div>
+          <dt><strong>カツオ料理の特徴</strong><span>最大 {KATSUO_FEATURES_MAX_POINTS:g}点</span></dt>
+          <dd>料理名の掲載 {KATSUO_DISH_NAME_POINTS:g}点を基礎に、藁焼き {WARAYAKI_POINTS:g}点、塩たたき {SHIO_TATAKI_POINTS:g}点、旬の案内 {SEASONAL_KATSUO_POINTS:g}点を加算します。</dd>
+        </div>
+        <div>
+          <dt><strong>独立した料理根拠URL</strong><span>最大 {INDEPENDENT_SOURCES_MAX_POINTS:g}点</span></dt>
+          <dd>根拠URLをドメイン単位で重複除外し、1ドメインにつき {INDEPENDENT_SOURCE_POINTS_PER_DOMAIN:g}点、最大 {INDEPENDENT_SOURCE_MAX_DOMAINS}ドメインまで加算します。</dd>
+        </div>
+        <div>
+          <dt><strong>新着レビューの評判</strong><span>最大 {RECENT_REVIEWS_MAX_POINTS:g}点</span></dt>
+          <dd>平均評価 {REVIEW_RATING_MAX_POINTS:g}点、確認件数 {REVIEW_COUNT_MAX_POINTS:g}点、情報源数 {REVIEW_SOURCE_MAX_POINTS:g}点で評価。件数は {REVIEW_COUNT_FOR_MAX_POINTS}件、情報源は {REVIEW_SOURCE_COUNT_FOR_MAX_POINTS}サイトで満点です。</dd>
+        </div>
+        <div>
+          <dt><strong>ホテルからの距離</strong><span>最大 {DISTANCE_MAX_POINTS:g}点</span></dt>
+          <dd>ホテルと同じ位置を {DISTANCE_MAX_POINTS:g}点とし、離れるほど直線的に減点。検索距離の上限で0点になります。</dd>
+        </div>
+      </dl>
+      <p>LLMは採点や順位決定を行わず、同じ入力なら同じ結果になります。</p>
     </aside>
   </main>
   <footer>

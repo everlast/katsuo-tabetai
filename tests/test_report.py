@@ -47,12 +47,16 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
     assert 'class="ranking-index"' in html
     assert "掲載店へ移動" in html
     assert 'class="score-note"' in html
+    assert 'class="score-note-items"' in html
     assert "スコアはどう決まる？" in html
-    assert (
-        "カツオ料理の根拠種別 25点、料理の特徴 20点、"
-        "独立した根拠URL 10点、新着レビュー 25点、"
-        "ホテルからの距離 20点"
-    ) in html
+    for explanation in (
+        "店舗公式 25点、観光公式 21点、予約サイト 16点、レビューサイト 10点",
+        "料理名の掲載 8点を基礎に、藁焼き 5点、塩たたき 4点、旬の案内 3点",
+        "1ドメインにつき 2点、最大 5ドメイン",
+        "平均評価 20点、確認件数 3点、情報源数 2点",
+        "検索距離の上限で0点",
+    ):
+        assert explanation in html
     assert html.rfind('class="restaurant"') < html.index('class="score-note"')
     assert html.index('class="ranking-index"') < html.index('class="restaurant"')
     for restaurant in restaurants:

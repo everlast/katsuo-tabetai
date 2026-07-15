@@ -17,8 +17,10 @@ from katsuo_tabetai.tools import (
     save_restaurant_candidates,
 )
 from katsuo_tabetai.workflow import (
+    NoValidResearchCandidatesError,
     audit_run_items,
     build_agents,
+    run_storage_and_evaluation_phase,
     run_web_research_phase,
     run_katsuo_workflow,
 )
@@ -91,6 +93,44 @@ def test_save_tool_is_enabled_only_for_unsaved_pending_candidates(tmp_path) -> N
 
     context.candidates_saved = True
     assert candidate_save_is_enabled(wrapper, researcher) is False
+
+
+def test_storage_phase_rejects_empty_valid_candidate_set_before_runner(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    context = KatsuoContext(
+        hotel=HotelLocation(name="Hotel", latitude=33.5, longitude=133.5),
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+        candidate_rejections=[
+            "Save rejected: Restaurant 1 has reviews from fewer than 2 source sites.",
+            "Save rejected: Restaurant 2 has a review older than 365 days.",
+        ],
+    )
+    runner_called = False
+
+    async def fake_run(**kwargs):
+        nonlocal runner_called
+        runner_called = True
+
+    monkeypatch.setattr("katsuo_tabetai.workflow.Runner.run", fake_run)
+
+    with pytest.raises(
+        NoValidResearchCandidatesError,
+        match="No restaurant candidates passed recent-review validation",
+    ) as exc_info:
+        asyncio.run(
+            run_storage_and_evaluation_phase(
+                build_agents().researcher,
+                context,
+                max_turns=24,
+            )
+        )
+
+    assert "Restaurant 1" in str(exc_info.value)
+    assert "Restaurant 2" in str(exc_info.value)
+    assert runner_called is False
 
 
 def test_tool_failures_propagate_without_incrementing_success_counters(

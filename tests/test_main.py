@@ -8,6 +8,7 @@ from agents import UserError
 
 from katsuo_tabetai import main as main_module
 from katsuo_tabetai.main import build_parser, load_project_environment
+from katsuo_tabetai.workflow import NoValidResearchCandidatesError
 
 
 def test_parser_uses_crown_palais_kochi_as_default_hotel() -> None:
@@ -61,5 +62,20 @@ def test_main_reports_agents_sdk_errors_without_traceback(monkeypatch) -> None:
     with pytest.raises(
         SystemExit,
         match="Katsuo workflow failed: candidate validation failed",
+    ):
+        main_module.main()
+
+
+def test_main_reports_no_valid_candidates_without_traceback(monkeypatch) -> None:
+    async def fail_run(args):
+        raise NoValidResearchCandidatesError("no valid candidates")
+
+    monkeypatch.setattr(main_module, "load_project_environment", lambda: False)
+    monkeypatch.setattr(main_module, "_run", fail_run)
+    monkeypatch.setattr(sys, "argv", ["katsuo-tabetai"])
+
+    with pytest.raises(
+        SystemExit,
+        match="Katsuo workflow failed: no valid candidates",
     ):
         main_module.main()

@@ -4,6 +4,7 @@ from html import escape
 from pathlib import Path
 
 from .models import EvidenceSourceType, TopFiveStore
+from .scoring import RECENT_REVIEWS_MAX_POINTS, TOTAL_MAX_POINTS
 
 SOURCE_LABELS = {
     EvidenceSourceType.OFFICIAL_RESTAURANT: "店舗公式",
@@ -47,7 +48,10 @@ def _restaurant_row(restaurant) -> str:
         features.append("旬の案内")
     feature_html = "".join(f"<li>{escape(item)}</li>" for item in features)
     review_html = "".join(_review_row(review) for review in restaurant.recent_reviews)
-    score_width = min(100.0, max(0.0, restaurant.score))
+    score_width = min(
+        100.0,
+        max(0.0, restaurant.score / float(TOTAL_MAX_POINTS) * 100),
+    )
     source_label = SOURCE_LABELS[restaurant.evidence_source_type]
     reputation = restaurant.review_reputation
     return f"""
@@ -61,8 +65,8 @@ def _restaurant_row(restaurant) -> str:
               <p class="source-type">{escape(source_label)}</p>
               <h2 id="restaurant-{restaurant.rank}">{escape(restaurant.name)}</h2>
             </div>
-            <div class="score" aria-label="100点満点中 {restaurant.score:.2f}点">
-              <strong>{restaurant.score:.2f}</strong><span>/ 100</span>
+            <div class="score" aria-label="{TOTAL_MAX_POINTS:g}点満点中 {restaurant.score:.2f}点">
+              <strong>{restaurant.score:.2f}</strong><span>/ {TOTAL_MAX_POINTS:g}</span>
             </div>
           </div>
           <div class="score-track" aria-hidden="true"><span style="width:{score_width:.2f}%"></span></div>
@@ -86,7 +90,7 @@ def _restaurant_row(restaurant) -> str:
                 <div><dt>情報源</dt><dd>{reputation.source_count}サイト</dd></div>
               </dl>
             </div>
-            <p class="review-score">総合点のうちレビュー評判: {restaurant.score_breakdown.recent_reviews:.2f} / 25点</p>
+            <p class="review-score">総合点のうちレビュー評判: {restaurant.score_breakdown.recent_reviews:.2f} / {RECENT_REVIEWS_MAX_POINTS:g}点</p>
             <ol class="reviews">{review_html}</ol>
           </section>
         </div>
@@ -254,7 +258,7 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
         <p class="eyebrow">Kochi station katsuo guide</p>
         <h1>高知駅前<br>カツオ TOP 5</h1>
       </div>
-      <div class="stamp">DETERMINISTIC SCORE<strong>100 POINTS</strong></div>
+      <div class="stamp">DETERMINISTIC SCORE<strong>{TOTAL_MAX_POINTS:g} POINTS</strong></div>
     </div>
     <div class="criteria" aria-label="検索条件">
       <div><span>基準地点</span><strong>{escape(report.hotel.name)}</strong></div>

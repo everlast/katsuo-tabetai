@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from decimal import Decimal, ROUND_HALF_UP
 from math import asin, cos, radians, sin, sqrt
+from typing import Final
 
 from .models import (
     EvidenceSourceType,
@@ -17,12 +18,49 @@ from .models import (
 EARTH_RADIUS_KM = 6371.0088
 TWO_PLACES = Decimal("0.01")
 
-EVIDENCE_POINTS = {
+EVIDENCE_POINTS: Final = {
     EvidenceSourceType.OFFICIAL_RESTAURANT: Decimal("25"),
     EvidenceSourceType.OFFICIAL_TOURISM: Decimal("21"),
     EvidenceSourceType.RESERVATION_SITE: Decimal("16"),
     EvidenceSourceType.REVIEW_SITE: Decimal("10"),
 }
+KATSUO_DISH_NAME_POINTS: Final = Decimal("8")
+WARAYAKI_POINTS: Final = Decimal("5")
+SHIO_TATAKI_POINTS: Final = Decimal("4")
+SEASONAL_KATSUO_POINTS: Final = Decimal("3")
+
+INDEPENDENT_SOURCE_POINTS_PER_DOMAIN: Final = Decimal("2")
+INDEPENDENT_SOURCE_MAX_DOMAINS: Final = 5
+
+REVIEW_RATING_MAX_POINTS: Final = Decimal("20")
+REVIEW_RATING_SCALE_MAX: Final = Decimal("5")
+REVIEW_COUNT_MAX_POINTS: Final = Decimal("3")
+REVIEW_COUNT_FOR_MAX_POINTS: Final = 5
+REVIEW_SOURCE_MAX_POINTS: Final = Decimal("2")
+REVIEW_SOURCE_COUNT_FOR_MAX_POINTS: Final = 2
+
+DISTANCE_MAX_POINTS: Final = Decimal("20")
+
+EVIDENCE_MAX_POINTS: Final = max(EVIDENCE_POINTS.values())
+KATSUO_FEATURES_MAX_POINTS: Final = (
+    KATSUO_DISH_NAME_POINTS
+    + WARAYAKI_POINTS
+    + SHIO_TATAKI_POINTS
+    + SEASONAL_KATSUO_POINTS
+)
+INDEPENDENT_SOURCES_MAX_POINTS: Final = (
+    INDEPENDENT_SOURCE_POINTS_PER_DOMAIN * INDEPENDENT_SOURCE_MAX_DOMAINS
+)
+RECENT_REVIEWS_MAX_POINTS: Final = (
+    REVIEW_RATING_MAX_POINTS + REVIEW_COUNT_MAX_POINTS + REVIEW_SOURCE_MAX_POINTS
+)
+TOTAL_MAX_POINTS: Final = (
+    EVIDENCE_MAX_POINTS
+    + KATSUO_FEATURES_MAX_POINTS
+    + INDEPENDENT_SOURCES_MAX_POINTS
+    + RECENT_REVIEWS_MAX_POINTS
+    + DISTANCE_MAX_POINTS
+)
 
 
 def _round(value: Decimal) -> float:
@@ -141,34 +179,46 @@ def score_candidate(
     """Calculate a deterministic 100-point score from stored facts."""
     evidence = EVIDENCE_POINTS[candidate.evidence_source_type]
 
-    katsuo_features = Decimal("8")
+    katsuo_features = KATSUO_DISH_NAME_POINTS
     if candidate.has_warayaki:
-        katsuo_features += Decimal("5")
+        katsuo_features += WARAYAKI_POINTS
     if candidate.has_shio_tataki:
-        katsuo_features += Decimal("4")
+        katsuo_features += SHIO_TATAKI_POINTS
     if candidate.has_seasonal_katsuo:
-        katsuo_features += Decimal("3")
+        katsuo_features += SEASONAL_KATSUO_POINTS
 
     unique_sources = {
         _normalized_host(candidate.evidence_url),
         *(_normalized_host(url) for url in candidate.source_urls),
     }
-    independent_sources = Decimal(min(len(unique_sources), 5) * 2)
+    independent_sources = (
+        Decimal(min(len(unique_sources), INDEPENDENT_SOURCE_MAX_DOMAINS))
+        * INDEPENDENT_SOURCE_POINTS_PER_DOMAIN
+    )
 
     reputation = summarize_review_reputation(candidate)
     rating_points = (
-        Decimal(str(reputation.average_rating)) / Decimal("5") * Decimal("20")
+        Decimal(str(reputation.average_rating))
+        / REVIEW_RATING_SCALE_MAX
+        * REVIEW_RATING_MAX_POINTS
     )
     volume_points = (
-        Decimal(min(reputation.review_count, 5)) / Decimal("5") * Decimal("3")
+        Decimal(min(reputation.review_count, REVIEW_COUNT_FOR_MAX_POINTS))
+        / Decimal(REVIEW_COUNT_FOR_MAX_POINTS)
+        * REVIEW_COUNT_MAX_POINTS
     )
     diversity_points = (
-        Decimal(min(reputation.source_count, 2)) / Decimal("2") * Decimal("2")
+        Decimal(min(reputation.source_count, REVIEW_SOURCE_COUNT_FOR_MAX_POINTS))
+        / Decimal(REVIEW_SOURCE_COUNT_FOR_MAX_POINTS)
+        * REVIEW_SOURCE_MAX_POINTS
     )
     recent_reviews = rating_points + volume_points + diversity_points
 
     distance_ratio = Decimal(str(candidate.distance_km)) / Decimal(str(max_distance_km))
-    distance = max(Decimal("0"), Decimal("20") * (Decimal("1") - distance_ratio))
+    distance = max(
+        Decimal("0"),
+        DISTANCE_MAX_POINTS * (Decimal("1") - distance_ratio),
+    )
 
     return ScoreBreakdown(
         evidence=_round(evidence),

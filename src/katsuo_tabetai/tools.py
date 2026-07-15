@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from agents import RunContextWrapper, function_tool
 
@@ -14,6 +14,8 @@ from .models import (
 from .report import render_top_five_html
 from .scoring import apply_range_rule, rank_top_five
 
+RECENT_REVIEW_MAX_AGE_DAYS = 548
+
 
 def _deduplicate(
     candidates: list[RestaurantCandidateInput],
@@ -25,11 +27,44 @@ def _deduplicate(
     return list(unique.values())
 
 
+def _validate_recent_reviews(
+    candidates: list[RestaurantCandidateInput],
+    as_of: date,
+) -> None:
+    oldest_allowed = as_of - timedelta(days=RECENT_REVIEW_MAX_AGE_DAYS)
+    for candidate in candidates:
+        fingerprints: set[tuple[date, str]] = set()
+        for review in candidate.recent_reviews:
+            if review.published_at > as_of:
+                raise ValueError(
+                    f"Save rejected: {candidate.name} has a future-dated review "
+                    f"({review.published_at.isoformat()})."
+                )
+            if review.published_at < oldest_allowed:
+                raise ValueError(
+                    f"Save rejected: {candidate.name} has a review older than "
+                    f"{RECENT_REVIEW_MAX_AGE_DAYS} days "
+                    f"({review.published_at.isoformat()})."
+                )
+            fingerprint = (
+                review.published_at,
+                "".join(review.summary.casefold().split()),
+            )
+            if fingerprint in fingerprints:
+                raise ValueError(
+                    f"Save rejected: {candidate.name} contains a duplicate review "
+                    f"dated {review.published_at.isoformat()}."
+                )
+            fingerprints.add(fingerprint)
+
+
 def persist_restaurant_candidates(
     context: KatsuoContext,
     candidates: list[RestaurantCandidateInput],
 ) -> dict[str, object]:
     deduplicated = _deduplicate(candidates)
+    generated_at = datetime.now(timezone.utc)
+    _validate_recent_reviews(deduplicated, generated_at.date())
     ranged = [
         apply_range_rule(candidate, context.hotel, context.max_distance_km)
         for candidate in deduplicated
@@ -43,7 +78,7 @@ def persist_restaurant_candidates(
         )
 
     store = CandidateStore(
-        generated_at=datetime.now(timezone.utc),
+        generated_at=generated_at,
         hotel=context.hotel,
         max_distance_km=context.max_distance_km,
         candidates=ranged,
@@ -72,7 +107,8 @@ def save_restaurant_candidates(
 
     Args:
         candidates: Restaurants found by web search. Every entry must have a page
-            that explicitly names its katsuo dish and map coordinates.
+            that explicitly names its katsuo dish, map coordinates, and at least
+            three distinct reviews published within the last 18 months.
     """
     context = wrapper.context
     context.candidate_save_calls += 1

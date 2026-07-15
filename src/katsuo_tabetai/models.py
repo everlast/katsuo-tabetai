@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Annotated
 
@@ -13,6 +13,11 @@ FunctionToolHttpUrl = Annotated[
     HttpUrl,
     WithJsonSchema({"type": "string"}, mode="validation"),
 ]
+FunctionToolDate = Annotated[
+    date,
+    WithJsonSchema({"type": "string"}, mode="validation"),
+]
+ReviewPoint = Annotated[str, Field(min_length=1, max_length=60)]
 
 
 class EvidenceSourceType(StrEnum):
@@ -26,6 +31,40 @@ class HotelLocation(BaseModel):
     name: str = Field(min_length=1)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
+
+
+class RecentReview(BaseModel):
+    source_name: str = Field(
+        min_length=1,
+        max_length=80,
+        description="The review platform or publication name.",
+    )
+    review_url: FunctionToolHttpUrl = Field(
+        description="A page where this specific review can be verified.",
+    )
+    published_at: FunctionToolDate = Field(
+        description="The explicitly displayed publication date in YYYY-MM-DD form.",
+    )
+    rating: float = Field(
+        ge=1,
+        le=5,
+        description="The review's displayed rating normalized to a 1-5 scale.",
+    )
+    summary: str = Field(
+        min_length=1,
+        max_length=240,
+        description="A short paraphrase of the review, not a verbatim quotation.",
+    )
+    positive_points: list[ReviewPoint] = Field(
+        min_length=1,
+        max_length=3,
+        description="One to three short aspects explicitly praised by the reviewer.",
+    )
+    caution_points: list[ReviewPoint] = Field(
+        default_factory=list,
+        max_length=3,
+        description="Up to three short cautions explicitly mentioned by the reviewer.",
+    )
 
 
 class RestaurantCandidateInput(BaseModel):
@@ -45,6 +84,14 @@ class RestaurantCandidateInput(BaseModel):
         default_factory=list,
         description="Additional independent pages used to verify the restaurant.",
     )
+    recent_reviews: list[RecentReview] = Field(
+        min_length=3,
+        max_length=8,
+        description=(
+            "Three to eight distinct recent reviews with dates, ratings, paraphrased "
+            "summaries, and verifiable URLs."
+        ),
+    )
     has_warayaki: bool
     has_shio_tataki: bool
     has_seasonal_katsuo: bool
@@ -56,7 +103,7 @@ class RestaurantCandidate(RestaurantCandidateInput):
 
 
 class CandidateStore(BaseModel):
-    schema_version: int = 1
+    schema_version: int = 2
     generated_at: datetime
     hotel: HotelLocation
     max_distance_km: float = Field(gt=0)
@@ -67,6 +114,7 @@ class ScoreBreakdown(BaseModel):
     evidence: float
     katsuo_features: float
     independent_sources: float
+    recent_reviews: float
     distance: float
 
     @property
@@ -75,19 +123,30 @@ class ScoreBreakdown(BaseModel):
             self.evidence
             + self.katsuo_features
             + self.independent_sources
+            + self.recent_reviews
             + self.distance,
             2,
         )
+
+
+class ReviewReputation(BaseModel):
+    average_rating: float = Field(ge=1, le=5)
+    review_count: int = Field(ge=3)
+    source_count: int = Field(ge=1)
+    top_positive_points: list[str]
+    caution_points: list[str]
 
 
 class RankedRestaurant(RestaurantCandidate):
     rank: int = Field(ge=1)
     score: float = Field(ge=0, le=100)
     score_breakdown: ScoreBreakdown
+    review_reputation: ReviewReputation
+    recommendation_reason: str = Field(min_length=1)
 
 
 class TopFiveStore(BaseModel):
-    schema_version: int = 1
+    schema_version: int = 2
     generated_at: datetime
     hotel: HotelLocation
     max_distance_km: float = Field(gt=0)

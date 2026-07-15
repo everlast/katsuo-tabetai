@@ -150,9 +150,14 @@ Required workflow, in this exact order:
 3. Every candidate must have an evidence_url whose page explicitly names that
    restaurant's katsuo dish. Prefer official restaurant pages, then official
    tourism pages, reservation sites, and lastly review sites.
-4. Call save_restaurant_candidates exactly once with all verified candidates.
+4. For every candidate, collect 3 to 8 distinct reviews published within the
+   last 18 months. The page must explicitly display each review's date and rating.
+   Prefer multiple review platforms when available. Never infer a date or rating.
+   Paraphrase each review in under 240 characters, record 1 to 3 praised aspects,
+   and include any cautions the reviewer actually mentioned. Do not copy review text.
+5. Call save_restaurant_candidates exactly once with all verified candidates.
    Boolean dish features must be supported by the evidence page.
-5. After the save tool succeeds, call transfer_to_katsuo_evaluation. Do not
+6. After the save tool succeeds, call transfer_to_katsuo_evaluation. Do not
    produce a final answer yourself and do not use an agent-as-tool pattern.
 """.strip()
         ),

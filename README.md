@@ -89,6 +89,25 @@ outputs/
 - 新着レビューの評判: 最大25点（平均評価20、確認件数3、情報源数2）
 - ホテルからの距離: 最大20点（距離上限まで線形減点）
 
+### 配点の設定方法
+
+配点と満点条件は[`src/katsuo_tabetai/scoring.py`](src/katsuo_tabetai/scoring.py)の先頭にある定数で変更します。
+
+- `EVIDENCE_POINTS`: 店舗公式、観光公式、予約サイト、レビューサイトの配点
+- `KATSUO_DISH_NAME_POINTS`, `WARAYAKI_POINTS`, `SHIO_TATAKI_POINTS`, `SEASONAL_KATSUO_POINTS`: カツオ料理の特徴ごとの配点。料理名は必須項目のため、すべての候補に加点されます
+- `INDEPENDENT_SOURCE_POINTS_PER_DOMAIN`, `INDEPENDENT_SOURCE_MAX_DOMAINS`: 独立した料理根拠URLのドメイン単価と加点対象の上限数
+- `REVIEW_RATING_MAX_POINTS`, `REVIEW_COUNT_MAX_POINTS`, `REVIEW_SOURCE_MAX_POINTS`: レビューの平均評価、確認件数、情報源数の最大配点
+- `REVIEW_COUNT_FOR_MAX_POINTS`, `REVIEW_SOURCE_COUNT_FOR_MAX_POINTS`: 確認件数と情報源数が満点になる件数
+- `DISTANCE_MAX_POINTS`: ホテルと同じ地点にある場合の距離配点。距離上限に達するまで線形に減点されます
+
+`EVIDENCE_MAX_POINTS`などのカテゴリ満点と`TOTAL_MAX_POINTS`は、上記の定数から自動計算されるため直接変更しません。`RankedRestaurant.score`は100点満点を前提に検証するため、配点を変更するときは`TOTAL_MAX_POINTS == 100`を保ってください。HTMLの総合満点、レビュー満点、スコアバーは同じ定数に連動します。
+
+変更後は配点テストを実行します。
+
+```bash
+uv run pytest tests/test_scoring.py tests/test_report.py
+```
+
 レビューの「新着」は候補JSONの生成日から548日以内です。採点時は保存済みレビューの5点評価、件数、URLドメイン数だけを使い、LLMに点数や順位を決めさせません。推薦理由も保存済みの料理特徴、レビュー集約、距離から定型ロジックで生成します。
 
 範囲外の候補は採点対象外です。5店未満しか範囲内に残らない場合はHTMLを作らず、調査不足として失敗します。

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, Field, HttpUrl, WithJsonSchema
+from pydantic import BaseModel, Field, HttpUrl, WithJsonSchema, field_validator
 
 
 # Responses function tools reject Pydantic's `format: uri`, while HttpUrl still
@@ -17,8 +18,38 @@ FunctionToolDate = Annotated[
     date,
     WithJsonSchema({"type": "string"}, mode="validation"),
 ]
-PositiveReviewPoint = Annotated[str, Field(min_length=10, max_length=30)]
+PositiveReviewPoint = Annotated[str, Field(min_length=2, max_length=30)]
 ReviewPoint = Annotated[str, Field(min_length=1, max_length=60)]
+
+_POINT_LIST_SEPARATOR = re.compile(r'["\']\s*,\s*["\']')
+_POINT_INSTRUCTION_SUFFIX = re.compile(
+    r"\s*(?:[.。]\s*)?\d+\s*(?:-|~|〜|～)\s*\d+\s*$"
+)
+_POINT_FIELD_NAME = re.compile(r"(?:positive|caution)_points", re.IGNORECASE)
+_POINT_WRAPPER_CHARS = " \t\r\n\"'[]{}(),.、。"
+
+
+def _normalize_review_points(value: object) -> object:
+    """Remove structured-output artifacts occasionally leaked into point text."""
+    if not isinstance(value, list):
+        return value
+
+    normalized: list[object] = []
+    for item in value:
+        if not isinstance(item, str):
+            normalized.append(item)
+            continue
+        for fragment in _POINT_LIST_SEPARATOR.split(item):
+            fragment = fragment.strip(_POINT_WRAPPER_CHARS)
+            fragment = _POINT_INSTRUCTION_SUFFIX.sub("", fragment)
+            fragment = fragment.strip(_POINT_WRAPPER_CHARS)
+            if not fragment or _POINT_FIELD_NAME.search(fragment):
+                continue
+            if any(character in fragment for character in "[]{}"):
+                continue
+            if fragment not in normalized:
+                normalized.append(fragment)
+    return normalized[:3]
 
 
 class EvidenceSourceType(StrEnum):
@@ -70,6 +101,11 @@ class RecentReview(BaseModel):
         max_length=3,
         description="Up to three short cautions explicitly mentioned by the reviewer.",
     )
+
+    @field_validator("positive_points", "caution_points", mode="before")
+    @classmethod
+    def normalize_points(cls, value: object) -> object:
+        return _normalize_review_points(value)
 
 
 class RestaurantCandidateInput(BaseModel):

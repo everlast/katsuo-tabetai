@@ -302,9 +302,11 @@ Required workflow:
    page must explicitly display each review's date or visit month and its exact
    rating. When only YYYY-MM is displayed, store YYYY-MM-01 in published_at for
    recency calculations. Never infer a year, month, or rating. Paraphrase each
-   review in under 500 characters, record 1 to 3 praised aspects in 10 to 30
-   characters, and include cautions the reviewer actually mentioned. Do not copy
-   review text.
+   review in under 500 characters and record 1 to 3 praised aspects as natural
+   Japanese phrases of 2 to 30 characters. Include cautions the reviewer actually
+   mentioned. Point arrays must contain only the point text, such as
+   "藁焼きの香りが良い". Never include field names, JSON syntax, character-count
+   notes, or instruction text in a point. Do not copy review text.
 5. Return the verified candidates as the required structured output. Do not rank them.
 """.strip(),
         tools=[

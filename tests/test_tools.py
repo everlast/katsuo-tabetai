@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -94,7 +94,7 @@ def test_candidate_save_rejects_reviews_outside_recent_window(tmp_path) -> None:
     stale_reviews = [
         review.model_copy(
             update={
-                "published_at": date.today()
+                "published_at": datetime.now(timezone.utc).date()
                 - timedelta(days=RECENT_REVIEW_MAX_AGE_DAYS + 1)
             }
         )

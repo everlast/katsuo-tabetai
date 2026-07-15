@@ -27,15 +27,26 @@ SOURCE_LABELS = {
 }
 
 
-def _score_breakdown_row(label: str, value: float, maximum) -> str:
+def _score_breakdown_row(
+    label: str,
+    value: float,
+    maximum,
+    detail: str | None = None,
+) -> str:
     maximum_float = float(maximum)
     width = min(100.0, max(0.0, value / maximum_float * 100))
+    detail_html = (
+        f'<span class="score-breakdown-detail">{escape(detail)}</span>'
+        if detail
+        else ""
+    )
     return f"""
               <div class="score-breakdown-row">
                 <dt>{escape(label)}</dt>
                 <dd>
-                  <span class="score-breakdown-value">{value:.2f} / {maximum_float:g}</span>
+                  <span class="score-breakdown-value">{value:.2f} / {maximum_float:g}点</span>
                   <span class="mini-track" aria-hidden="true"><span style="width:{width:.2f}%"></span></span>
+                  {detail_html}
                 </dd>
               </div>"""
 
@@ -76,12 +87,21 @@ def _review_score_breakdown(restaurant) -> str:
         * float(REVIEW_SOURCE_MAX_POINTS)
     )
     rows = [
-        ("平均評価", rating_points, REVIEW_RATING_MAX_POINTS),
-        ("確認件数", volume_points, REVIEW_COUNT_MAX_POINTS),
-        ("情報源数", source_points, REVIEW_SOURCE_MAX_POINTS),
+        ("平均評価による加点", rating_points, REVIEW_RATING_MAX_POINTS, None),
+        (
+            "確認件数による加点",
+            volume_points,
+            REVIEW_COUNT_MAX_POINTS,
+            (
+                f"{reputation.review_count}件を確認"
+                f"（{REVIEW_COUNT_FOR_MAX_POINTS}件で満点）"
+            ),
+        ),
+        ("情報源数による加点", source_points, REVIEW_SOURCE_MAX_POINTS, None),
     ]
     return "".join(
-        _score_breakdown_row(label, value, maximum) for label, value, maximum in rows
+        _score_breakdown_row(label, value, maximum, detail)
+        for label, value, maximum, detail in rows
     )
 
 
@@ -177,6 +197,17 @@ def _restaurant_row(restaurant) -> str:
 
 def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
     rows = "\n".join(_restaurant_row(item) for item in report.restaurants)
+    index_items = "".join(
+        f"""
+          <li>
+            <a href="#restaurant-{restaurant.rank}">
+              <span class="ranking-index-rank">RANK {restaurant.rank}</span>
+              <strong>{escape(restaurant.name)}</strong>
+              <span class="ranking-index-score">{restaurant.score:.2f}点</span>
+            </a>
+          </li>"""
+        for restaurant in report.restaurants
+    )
     generated = report.generated_at.astimezone().strftime("%Y-%m-%d %H:%M %Z")
     html = f"""<!doctype html>
 <html lang="ja">
@@ -245,6 +276,47 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
     .criteria span {{ display: block; color: #b9c5c1; font-size: 11px; }}
     .criteria strong {{ display: block; margin-top: 3px; font-size: 14px; }}
     main {{ padding: 32px 0 56px; }}
+    .ranking-index {{
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      margin-bottom: 24px;
+      border: 1px solid var(--ink);
+      background: var(--white);
+    }}
+    .ranking-index-heading {{
+      display: grid;
+      align-content: center;
+      padding: 16px 18px;
+      border-right: 1px solid var(--ink);
+    }}
+    .ranking-index-label {{
+      margin: 0 0 4px;
+      color: var(--bonito);
+      font: 700 11px/1.4 "SFMono-Regular", Menlo, monospace;
+    }}
+    .ranking-index h2 {{ margin: 0; font-size: 16px; line-height: 1.4; }}
+    .ranking-index ol {{
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }}
+    .ranking-index li {{ min-width: 0; border-right: 1px solid var(--line); }}
+    .ranking-index li:last-child {{ border-right: 0; }}
+    .ranking-index a {{
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 6px;
+      min-height: 94px;
+      padding: 12px;
+      text-decoration: none;
+    }}
+    .ranking-index a:hover {{ background: #f3f6f4; }}
+    .ranking-index a:focus-visible {{ outline: 3px solid var(--market); outline-offset: -3px; }}
+    .ranking-index-rank {{ color: var(--ocean); font: 700 10px/1.3 "SFMono-Regular", Menlo, monospace; }}
+    .ranking-index strong {{ min-width: 0; overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; }}
+    .ranking-index-score {{ color: var(--muted); font: 700 11px/1.3 "SFMono-Regular", Menlo, monospace; }}
     .restaurant {{
       display: grid;
       grid-template-columns: 104px 1fr;
@@ -292,6 +364,13 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
     .score-breakdown-value {{
       display: block;
       font: 700 12px/1.2 "SFMono-Regular", Menlo, monospace;
+    }}
+    .score-breakdown-detail {{
+      display: block;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 9px;
+      line-height: 1.45;
     }}
     .mini-track {{
       display: block;
@@ -341,12 +420,38 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
     .positive-point {{ padding: 3px 7px; background: #e9f4f1; color: #155f59; font-size: 11px; }}
     .review-item .review-caution {{ margin: 8px 0; color: #854237; font-size: 11px; }}
     .review-item a {{ display: inline-block; margin-top: 9px; color: var(--ocean); font-size: 11px; font-weight: 700; }}
+    .score-note {{
+      margin-top: 32px;
+      padding: 18px 20px;
+      border-left: 4px solid var(--ocean);
+      background: #edf4f1;
+    }}
+    .score-note-label {{
+      margin: 0 0 4px;
+      color: var(--ocean);
+      font: 700 11px/1.4 "SFMono-Regular", Menlo, monospace;
+    }}
+    .score-note h2 {{ margin: 0 0 8px; font-size: 17px; line-height: 1.5; }}
+    .score-note p {{ margin: 0; color: var(--muted); font-size: 12px; line-height: 1.8; }}
+    .score-note p + p {{ margin-top: 4px; }}
+    .score-note strong {{ color: var(--ink); }}
     footer {{ padding: 22px 0 36px; color: var(--muted); font-size: 12px; line-height: 1.8; }}
     @media (max-width: 700px) {{
       .masthead-inner {{ grid-template-columns: 1fr; }}
       .stamp {{ width: max-content; max-width: 100%; }}
       .criteria {{ grid-template-columns: 1fr; }}
       .criteria div {{ border-right: 0; border-bottom: 1px solid #40504c; }}
+      .ranking-index {{ grid-template-columns: 1fr; }}
+      .ranking-index-heading {{ border-right: 0; border-bottom: 1px solid var(--ink); }}
+      .ranking-index ol {{ grid-template-columns: 1fr; }}
+      .ranking-index li {{ border-right: 0; border-bottom: 1px solid var(--line); }}
+      .ranking-index li:last-child {{ border-bottom: 0; }}
+      .ranking-index a {{
+        grid-template-columns: 56px minmax(0, 1fr) auto;
+        grid-template-rows: 1fr;
+        align-items: center;
+        min-height: 52px;
+      }}
       .restaurant {{ grid-template-columns: 64px 1fr; }}
       .rank {{ min-height: 100%; }}
       .rank strong {{ font-size: 42px; }}
@@ -379,7 +484,23 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
       <div><span>生成日時</span><strong>{escape(generated)}</strong></div>
     </div>
   </header>
-  <main>{rows}</main>
+  <main>
+    <nav class="ranking-index" aria-labelledby="ranking-index-title">
+      <div class="ranking-index-heading">
+        <p class="ranking-index-label">QUICK INDEX</p>
+        <h2 id="ranking-index-title">掲載店へ移動</h2>
+      </div>
+      <ol>{index_items}
+      </ol>
+    </nav>
+    {rows}
+    <aside class="score-note" aria-labelledby="score-note-title">
+      <p class="score-note-label">SCORING NOTE</p>
+      <h2 id="score-note-title">スコアはどう決まる？</h2>
+      <p><strong>{TOTAL_MAX_POINTS:g}点満点</strong>で、カツオ料理の根拠種別 {EVIDENCE_MAX_POINTS:g}点、料理の特徴 {KATSUO_FEATURES_MAX_POINTS:g}点、独立した根拠URL {INDEPENDENT_SOURCES_MAX_POINTS:g}点、新着レビュー {RECENT_REVIEWS_MAX_POINTS:g}点、ホテルからの距離 {DISTANCE_MAX_POINTS:g}点を合算しています。</p>
+      <p>レビューは平均評価・確認件数・情報源数で評価し、距離点はホテルから離れるほど検索上限に向けて直線的に減点します。保存した事実だけを使うため、同じ入力なら順位も同じです。</p>
+    </aside>
+  </main>
   <footer>
     距離は緯度経度からHaversine式で計算した直線距離です。レビューは生成日時から365日以内に公開・訪問されたものを要約し、原文ではなく根拠リンクを掲載しています。根拠ページに年月までしかない場合は月初として新着判定し、画面には年月まで表示します。営業日・提供メニュー・評判は変わるため、来店前に各ページで最新情報を確認してください。
   </footer>

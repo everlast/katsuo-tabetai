@@ -182,7 +182,7 @@ def test_research_output_schema_uses_supported_url_strings() -> None:
     assert review_schema["published_at"]["type"] == "string"
     assert "YYYY-MM-01" in review_schema["published_at"]["description"]
     assert review_schema["summary"]["maxLength"] == 500
-    assert review_schema["positive_points"]["items"]["minLength"] == 10
+    assert review_schema["positive_points"]["items"]["minLength"] == 2
     assert review_schema["positive_points"]["items"]["maxLength"] == 30
     assert '"format"' not in json.dumps(tool_schema)
 

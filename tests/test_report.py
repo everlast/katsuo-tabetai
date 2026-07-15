@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from katsuo_ai.models import HotelLocation, TopFiveStore
-from katsuo_ai.report import render_top_five_html
-from katsuo_ai.scoring import rank_top_five
+from katsuo_tabetai.models import HotelLocation, TopFiveStore
+from katsuo_tabetai.report import render_top_five_html
+from katsuo_tabetai.scoring import rank_top_five
 
 from test_scoring import make_candidate
 

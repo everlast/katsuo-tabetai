@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 from agents import WebSearchTool
 
-from katsuo_ai.context import KatsuoContext
-from katsuo_ai.models import HotelLocation
-from katsuo_ai.workflow import audit_run_items, build_agents
+from katsuo_tabetai.context import KatsuoContext
+from katsuo_tabetai.models import HotelLocation
+from katsuo_tabetai.workflow import audit_run_items, build_agents
 
 
 def test_workflow_has_real_handoff_and_required_tools() -> None:

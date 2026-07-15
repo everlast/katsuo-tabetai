@@ -12,6 +12,7 @@ class KatsuoContext:
     max_distance_km: float
     output_dir: Path
     candidate_save_calls: int = 0
+    candidates_saved: bool = False
     evaluation_tool_calls: int = 0
     handoff_calls: int = 0
     handoff_summary: str | None = None

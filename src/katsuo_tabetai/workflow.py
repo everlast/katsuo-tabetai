@@ -101,11 +101,20 @@ def audit_run_items(result: Any, context: KatsuoContext) -> RunAudit:
 def build_agents(
     model: str | None = None,
 ) -> tuple[Agent[KatsuoContext], Agent[KatsuoContext]]:
+    def evaluation_handoff_is_enabled(
+        wrapper: RunContextWrapper[KatsuoContext],
+        _: Agent[KatsuoContext],
+    ) -> bool:
+        return (
+            wrapper.context.candidates_saved
+            and wrapper.context.candidates_path.exists()
+        )
+
     async def on_evaluation_handoff(
         wrapper: RunContextWrapper[KatsuoContext],
         input_data: EvaluationHandoffInput,
     ) -> None:
-        if not wrapper.context.candidates_path.exists():
+        if not evaluation_handoff_is_enabled(wrapper, evaluator):
             raise RuntimeError(
                 "Handoff rejected: save_restaurant_candidates must run first."
             )
@@ -135,6 +144,7 @@ def build_agents(
         tool_description_override=(
             "Transfer control after web research and structured candidate storage are complete."
         ),
+        is_enabled=evaluation_handoff_is_enabled,
     )
     researcher = Agent[KatsuoContext](
         name="Katsuo Research Agent",

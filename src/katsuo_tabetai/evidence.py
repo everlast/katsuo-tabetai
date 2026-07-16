@@ -361,11 +361,12 @@ def _source_url_issues(
     return issues
 
 
-def _review_issues(
+def partition_reviews_by_reference_validity(
     candidate: RestaurantCandidateInput,
     pages: Mapping[str, ScrapedPage],
-) -> list[str]:
-    """Check review uniqueness and that each review page verifies its facts."""
+) -> tuple[list[RecentReview], list[str]]:
+    """Separate reviews whose page verifies the restaurant, location, and facts."""
+    verified: list[RecentReview] = []
     issues: list[str] = []
     review_fingerprints: set[tuple[str, str, date, float]] = set()
     for review in candidate.recent_reviews:
@@ -412,6 +413,17 @@ def _review_issues(
                 "a review whose reviewer, date, and rating cannot be verified together "
                 f"({review.review_url})"
             )
+            continue
+        verified.append(review)
+    return verified, issues
+
+
+def _review_issues(
+    candidate: RestaurantCandidateInput,
+    pages: Mapping[str, ScrapedPage],
+) -> list[str]:
+    """Check review uniqueness and that each review page verifies its facts."""
+    _, issues = partition_reviews_by_reference_validity(candidate, pages)
     return issues
 
 

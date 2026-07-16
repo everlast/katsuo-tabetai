@@ -14,7 +14,11 @@ from .config import (
     RECENT_REVIEW_MAX_AGE_DAYS,
 )
 from .context import KatsuoContext
-from .evidence import sanitize_candidate_claims, validate_candidate_references
+from .evidence import (
+    partition_reviews_by_reference_validity,
+    sanitize_candidate_claims,
+    validate_candidate_references,
+)
 from .models import (
     EVIDENCE_SOURCE_PRIORITY,
     RecentReview,
@@ -261,6 +265,26 @@ def _filter_valid_reviews(
     return valid_reviews, issues
 
 
+def prepare_candidate_for_evaluation(
+    candidate: RestaurantCandidateInput,
+    as_of: date,
+    scraped_pages: Mapping[str, ScrapedPage] | None = None,
+) -> tuple[RestaurantCandidateInput, list[str]]:
+    """Remove unusable reviews and optional claims before eligibility checks."""
+    valid_reviews, issues = _filter_valid_reviews(candidate, as_of)
+    prepared = candidate.model_copy(update={"recent_reviews": valid_reviews})
+    if scraped_pages is None:
+        return prepared, issues
+
+    prepared = sanitize_candidate_claims(prepared, scraped_pages)
+    verified_reviews, reference_issues = partition_reviews_by_reference_validity(
+        prepared,
+        scraped_pages,
+    )
+    issues.extend(reference_issues)
+    return prepared.model_copy(update={"recent_reviews": verified_reviews}), issues
+
+
 def validate_recent_reviews(
     candidates: list[RestaurantCandidateInput],
     as_of: date,
@@ -292,19 +316,24 @@ def partition_candidates_by_review_validity(
     accepted: list[RestaurantCandidateInput] = []
     rejections: list[str] = []
     for candidate in candidates:
-        valid_reviews, issues = _filter_valid_reviews(candidate, as_of)
-        if len(valid_reviews) < MIN_RECENT_REVIEW_COUNT:
+        candidate, issues = prepare_candidate_for_evaluation(
+            candidate,
+            as_of,
+            scraped_pages,
+        )
+        if len(candidate.recent_reviews) < MIN_RECENT_REVIEW_COUNT:
             issue_detail = (
                 summarize_issue_list(issues, "issue(s)") or "too few review entries"
             )
             rejections.append(
-                f"Evaluation excluded: {candidate.name} has only {len(valid_reviews)} "
+                f"Evaluation excluded: {candidate.name} has only "
+                f"{len(candidate.recent_reviews)} "
                 "valid recent reviews after filtering; at least "
                 f"{MIN_RECENT_REVIEW_COUNT} required. Removed: {issue_detail}."
             )
             continue
         review_source_sites = {
-            normalized_url_host(review.review_url) for review in valid_reviews
+            normalized_url_host(review.review_url) for review in candidate.recent_reviews
         }
         if len(review_source_sites) < MIN_REVIEW_SOURCE_SITES:
             rejections.append(
@@ -313,7 +342,6 @@ def partition_candidates_by_review_validity(
             )
             continue
         if scraped_pages is not None:
-            candidate = sanitize_candidate_claims(candidate, scraped_pages)
             reference_issues = validate_candidate_references(candidate, scraped_pages)
             if reference_issues:
                 issue_detail = summarize_issue_list(reference_issues, "issue(s)")
@@ -322,5 +350,5 @@ def partition_candidates_by_review_validity(
                     f"{issue_detail}."
                 )
                 continue
-        accepted.append(candidate.model_copy(update={"recent_reviews": valid_reviews}))
+        accepted.append(candidate)
     return accepted, rejections

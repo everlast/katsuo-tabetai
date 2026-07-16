@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import nullcontext
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
@@ -16,7 +17,7 @@ from katsuo_tabetai.tools import (
     evaluate_and_render_top_five,
     save_restaurant_candidates,
 )
-from katsuo_tabetai.scraping import scrape_reference_page
+from katsuo_tabetai.scraping import canonical_url, scrape_reference_page
 from katsuo_tabetai.workflow import (
     InsufficientResearchCandidatesError,
     InvalidResearchOutputError,
@@ -470,6 +471,87 @@ def test_workflow_retries_web_research_when_candidate_pool_is_insufficient(
     assert outcome.audit.web_search_calls == 2
 
 
+def test_research_starts_with_enrichment_for_incomplete_cached_pool(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    context = KatsuoContext(
+        hotel=HOTEL,
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    candidates = [
+        RestaurantCandidateInput.model_validate(
+            make_candidate(index).model_dump(exclude={"distance_km", "within_range"})
+        )
+        for index in range(1, 7)
+    ]
+    repair_target = candidates[1]
+    candidates = [
+        candidates[0],
+        repair_target,
+        *[
+            candidate.model_copy(update={"recent_reviews": []})
+            for candidate in candidates[2:]
+        ],
+    ]
+    populate_scraped_pages(context, candidates)
+    invalid_review = repair_target.recent_reviews[0]
+    invalid_key = canonical_url(invalid_review.review_url)
+    invalid_page = context.scraped_pages[invalid_key]
+    context.scraped_pages[invalid_key] = invalid_page.model_copy(
+        update={
+            "title": "Another restaurant",
+            "content": "\n".join(
+                [
+                    "Another restaurant",
+                    "Kochi 999",
+                    invalid_review.reviewer_name,
+                    invalid_review.published_at.isoformat(),
+                    f"{invalid_review.rating:g} / 5",
+                    "A review of a different venue",
+                ]
+            ),
+        }
+    )
+    context.collected_candidates = candidates
+    context.pending_candidates = [candidates[0]]
+    prompts: list[str] = []
+
+    async def fake_research_phase(
+        agent,
+        prompt,
+        context,
+        max_turns,
+        progress_label,
+    ):
+        prompts.append(prompt)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_web_research_phase",
+        fake_research_phase,
+    )
+
+    asyncio.run(
+        workflow_module._run_research_attempts(
+            web_researcher=build_agents().web_researcher,
+            context=context,
+            base_prompt="research",
+            max_turns=24,
+            research_attempts=1,
+            as_of=date.today(),
+        )
+    )
+
+    assert len(prompts) == 1
+    assert "RESEARCH MODE: ENRICHMENT" in prompts[0]
+    assert "current_reviews=4" in prompts[0]
+    assert "missing_reviews=1" in prompts[0]
+    assert str(invalid_review.review_url) not in prompts[0]
+
+
 def test_workflow_caches_partial_pool_when_attempt_limit_is_reached(
     tmp_path,
     monkeypatch,
@@ -717,3 +799,6 @@ def test_web_researcher_requires_reviews_from_at_least_two_platforms() -> None:
 
     assert "at least two independent review platforms" in instructions
     assert "at least two distinct domains" in instructions
+    assert "Review platforms drive candidate discovery" in instructions
+    assert "official sources strengthen dish evidence" in instructions
+    assert "official sources" in instructions and "never count as reviews" in instructions

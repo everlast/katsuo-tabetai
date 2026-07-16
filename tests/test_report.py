@@ -31,7 +31,7 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
     html = output.read_text(encoding="utf-8")
     assert "ホテル周辺" in html
     assert "100 POINTS" in html
-    assert "/ 25点" in html
+    assert "/ 40点" in html
     assert 'aria-label="総合スコアの評価項目別内訳"' in html
     assert 'aria-label="レビュー評判スコアの評価項目別内訳"' in html
     for label in (
@@ -54,10 +54,10 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
     assert 'class="score-note-items"' in html
     assert "スコアはどう決まる？" in html
     for explanation in (
-        "店舗公式 25点、観光公式 21点、予約サイト 16点、レビューサイト 10点",
-        "料理名の掲載 8点を基礎に、藁焼き 5点、塩たたき 4点、旬の案内 3点",
+        "店舗公式 20点、観光公式 17点、予約サイト 13点、レビューサイト 8点",
+        "料理名の掲載 6点を基礎に、藁焼き 4点、塩たたき 3点、旬の案内 2点",
         "1ドメインにつき 2点、最大 5ドメイン",
-        "平均評価 20点、確認件数 3点、情報源数 2点",
+        "平均評価 32点、確認件数 5点、情報源数 3点",
         "検索距離の上限で0点",
     ):
         assert explanation in html
@@ -71,8 +71,8 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
             assert str(source_url) in html
         assert restaurant.recommendation_reason in html
         assert "新着レビューから見た評判" in html
-        assert f"{restaurant.score_breakdown.evidence:.2f} / 25" in html
-        assert f"{restaurant.score_breakdown.recent_reviews:.2f} / 25" in html
+        assert f"{restaurant.score_breakdown.evidence:.2f} / 20" in html
+        assert f"{restaurant.score_breakdown.recent_reviews:.2f} / 40" in html
         assert (
             f"{restaurant.review_reputation.review_count}件を確認"
             "（5件で満点）"

@@ -18,6 +18,7 @@ from katsuo_tabetai.scoring import (
     apply_range_rule,
     haversine_km,
     rank_top_five,
+    rank_restaurants,
     score_candidate,
 )
 
@@ -279,3 +280,13 @@ def test_rank_top_five_is_sorted_and_stable() -> None:
         assert "直近レビュー5件" in item.recommendation_reason
         assert "カツオの鮮度と旨味が高い" in item.recommendation_reason
         assert item.review_reputation.review_count == 5
+
+
+def test_rank_restaurants_keeps_every_in_range_candidate() -> None:
+    ranked = rank_restaurants([make_candidate(i) for i in range(1, 7)], 2.5)
+
+    assert len(ranked) == 6
+    assert [item.rank for item in ranked] == [1, 2, 3, 4, 5, 6]
+    assert [item.score for item in ranked] == sorted(
+        [item.score for item in ranked], reverse=True
+    )

@@ -89,9 +89,14 @@ def test_function_tool_core_saves_structured_data_and_html(tmp_path) -> None:
         context.top_five_path.read_text(encoding="utf-8")
     )
     assert len(top_five.restaurants) == 5
+    assert len(top_five.additional_restaurants) == 1
+    assert top_five.additional_restaurants[0].rank == 6
     assert all(item.recommendation_reason for item in top_five.restaurants)
     assert all(len(item.recent_reviews) >= 5 for item in top_five.restaurants)
     assert report_result["status"] == "completed"
+    assert report_result["additional_restaurant_names"] == [
+        top_five.additional_restaurants[0].name
+    ]
     markdown = context.context_markdown_path.read_text(encoding="utf-8")
     assert "# Katsuo Restaurant Context" in markdown
     assert "gpt-5.6-luna" in markdown

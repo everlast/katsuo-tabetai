@@ -229,10 +229,11 @@ def score_candidate(
     )
 
 
-def rank_top_five(
+def rank_restaurants(
     candidates: list[RestaurantCandidate],
     max_distance_km: float,
 ) -> list[RankedRestaurant]:
+    """Rank every in-range restaurant with deterministic tie breaking."""
     scored = [
         (
             candidate,
@@ -266,5 +267,13 @@ def rank_top_five(
                 reputation,
             ),
         )
-        for index, (candidate, breakdown, reputation) in enumerate(scored[:5], start=1)
+        for index, (candidate, breakdown, reputation) in enumerate(scored, start=1)
     ]
+
+
+def rank_top_five(
+    candidates: list[RestaurantCandidate],
+    max_distance_km: float,
+) -> list[RankedRestaurant]:
+    """Return the first five restaurants from the full deterministic ranking."""
+    return rank_restaurants(candidates, max_distance_km)[:5]

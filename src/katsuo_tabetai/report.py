@@ -223,6 +223,20 @@ def _restaurant_row(restaurant) -> str:
       </article>"""
 
 
+def _additional_restaurant_row(restaurant) -> str:
+    evidence_url = escape(str(restaurant.evidence_url), quote=True)
+    reputation = restaurant.review_reputation
+    return f"""
+        <li value="{restaurant.rank}" class="additional-ranking-item">
+          <span class="additional-ranking-rank" aria-label="{restaurant.rank}位">{restaurant.rank}</span>
+          <div class="additional-ranking-main">
+            <a href="{evidence_url}" target="_blank" rel="noreferrer">{escape(restaurant.name)}</a>
+            <p>{escape(restaurant.katsuo_dish)} · ホテルから {restaurant.distance_km:.2f} km · 平均評価 {reputation.average_rating:.2f} / 5</p>
+          </div>
+          <strong class="additional-ranking-score">{restaurant.score:.2f}<span> / {TOTAL_MAX_POINTS:g}点</span></strong>
+        </li>"""
+
+
 _STYLE_CSS = """\
     :root {
       --paper: #f7f8f5;
@@ -458,6 +472,67 @@ _STYLE_CSS = """\
     .review-item .review-caution { margin: 8px 0; color: #854237; font-size: 11px; }
     .review-item a { display: inline-block; margin-top: 9px; color: var(--ocean); font-size: 11px; font-weight: 700; }
     .review-item a:focus-visible { outline: 3px solid var(--market); outline-offset: 3px; }
+    .additional-ranking {
+      margin-top: 16px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: var(--white);
+    }
+    .additional-ranking-heading {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      align-items: baseline;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--ink);
+    }
+    .additional-ranking-label {
+      margin: 0 0 3px;
+      color: var(--bonito);
+      font: 700 11px/1.4 "SFMono-Regular", Menlo, monospace;
+    }
+    .additional-ranking h2 { margin: 0; font-size: 18px; line-height: 1.4; }
+    .additional-ranking-heading > p { margin: 0; color: var(--muted); font-size: 11px; }
+    .additional-ranking ol { margin: 0; padding: 0; list-style: none; }
+    .additional-ranking-item {
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: center;
+      min-height: 72px;
+      padding: 11px 20px;
+      border-bottom: 1px solid var(--line);
+    }
+    .additional-ranking-item:last-child { border-bottom: 0; }
+    .additional-ranking-rank {
+      color: var(--rank);
+      font: 700 24px/1 "Hiragino Mincho ProN", "Yu Mincho", serif;
+      text-align: center;
+    }
+    .additional-ranking-main { min-width: 0; }
+    .additional-ranking-main a {
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.4;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+    .additional-ranking-main a:hover { color: var(--bonito); }
+    .additional-ranking-main a:focus-visible { outline: 3px solid var(--market); outline-offset: 3px; }
+    .additional-ranking-main p {
+      margin: 4px 0 0;
+      overflow-wrap: anywhere;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+    .additional-ranking-score {
+      color: var(--ocean);
+      font: 700 16px/1.3 "SFMono-Regular", Menlo, monospace;
+      white-space: nowrap;
+    }
+    .additional-ranking-score span { color: var(--muted); font-size: 10px; }
     .score-note {
       margin-top: 32px;
       padding: 18px 20px;
@@ -525,6 +600,15 @@ _STYLE_CSS = """\
       .review-stats { margin-top: 14px; gap: 12px; flex-wrap: wrap; }
       .review-meta { display: block; }
       .review-meta span { display: block; margin-top: 4px; text-align: left; }
+      .additional-ranking-heading { display: block; }
+      .additional-ranking-heading > p { margin-top: 5px; }
+      .additional-ranking-item {
+        grid-template-columns: 34px minmax(0, 1fr) auto;
+        gap: 10px;
+        padding: 12px 14px;
+      }
+      .additional-ranking-rank { font-size: 20px; }
+      .additional-ranking-score { font-size: 13px; }
     }
     @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }"""
 
@@ -563,6 +647,23 @@ def _score_note_html() -> str:
 
 def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
     rows = "\n".join(_restaurant_row(item) for item in report.restaurants)
+    additional_ranking = ""
+    if report.additional_restaurants:
+        additional_rows = "\n".join(
+            _additional_restaurant_row(item) for item in report.additional_restaurants
+        )
+        additional_ranking = f"""
+    <section class="additional-ranking" aria-labelledby="additional-ranking-title">
+      <div class="additional-ranking-heading">
+        <div>
+          <p class="additional-ranking-label">FULL RANKING</p>
+          <h2 id="additional-ranking-title">6位以下</h2>
+        </div>
+        <p>評価条件を満たした全店舗</p>
+      </div>
+      <ol start="6">{additional_rows}
+      </ol>
+    </section>"""
     index_items = "".join(
         f"""
           <li>
@@ -611,6 +712,7 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
       </ol>
     </nav>
     {rows}
+{additional_ranking}
 {_score_note_html()}
   </main>
   <footer>

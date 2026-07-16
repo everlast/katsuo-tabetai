@@ -268,10 +268,11 @@ def _review_facts_share_window(review: RecentReview, page: ScrapedPage) -> bool:
     return False
 
 
-def validate_candidate_references(
+def _evidence_page_issues(
     candidate: RestaurantCandidateInput,
     pages: Mapping[str, ScrapedPage],
 ) -> list[str]:
+    """Check that the primary evidence page proves name, address, and dish."""
     issues: list[str] = []
     evidence_page = find_scraped_page(pages, candidate.evidence_url)
     if evidence_page is None:
@@ -283,7 +284,15 @@ def validate_candidate_references(
             issues.append("the katsuo evidence page does not confirm this address")
         if not _page_names_katsuo_dish(candidate, evidence_page):
             issues.append("the katsuo evidence page does not confirm the stated dish")
+    return issues
 
+
+def _source_url_issues(
+    candidate: RestaurantCandidateInput,
+    pages: Mapping[str, ScrapedPage],
+) -> list[str]:
+    """Check that every additional source names the restaurant, place, and dish."""
+    issues: list[str] = []
     for source_url in candidate.source_urls:
         source_page = find_scraped_page(pages, source_url)
         if source_page is None:
@@ -301,7 +310,15 @@ def validate_candidate_references(
             issues.append(
                 f"an additional source does not confirm the katsuo dish ({source_url})"
             )
+    return issues
 
+
+def _review_issues(
+    candidate: RestaurantCandidateInput,
+    pages: Mapping[str, ScrapedPage],
+) -> list[str]:
+    """Check review uniqueness and that each review page verifies its facts."""
+    issues: list[str] = []
     review_fingerprints: set[tuple[str, str, date, float]] = set()
     for review in candidate.recent_reviews:
         url_key = canonical_url(review.review_url)
@@ -348,6 +365,17 @@ def validate_candidate_references(
                 f"({review.review_url})"
             )
     return issues
+
+
+def validate_candidate_references(
+    candidate: RestaurantCandidateInput,
+    pages: Mapping[str, ScrapedPage],
+) -> list[str]:
+    return [
+        *_evidence_page_issues(candidate, pages),
+        *_source_url_issues(candidate, pages),
+        *_review_issues(candidate, pages),
+    ]
 
 
 def scraped_pages_for_candidate(

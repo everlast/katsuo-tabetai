@@ -140,7 +140,12 @@ class RestaurantCandidateInput(BaseModel):
     evidence_source_type: EvidenceSourceType
     source_urls: list[FunctionToolHttpUrl] = Field(
         default_factory=list,
-        description="Additional independent pages used to verify the restaurant.",
+        description=(
+            "Additional pages on independent domains that name the restaurant, "
+            "identify its branch or address, and explicitly name its katsuo dish. "
+            "Prefer official restaurant, official tourism, and reservation menu "
+            "pages. Do not include review-list, review-detail, or map pages."
+        ),
     )
     recent_reviews: list[RecentReview] = Field(
         default_factory=list,

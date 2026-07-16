@@ -11,7 +11,11 @@ from agents import AgentsException, set_default_openai_client
 from dotenv import find_dotenv, load_dotenv
 from openai import AsyncOpenAI
 
-from .config import DEFAULT_MODEL
+from .config import (
+    DEFAULT_DISCOVERY_ATTEMPTS,
+    DEFAULT_MODEL,
+    DEFAULT_REVIEW_ENRICHMENT_ATTEMPTS,
+)
 from .context import KatsuoContext
 from .models import HotelLocation
 from .workflow import (
@@ -64,16 +68,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--workflow-timeout-seconds",
         type=float,
-        default=600.0,
-        help="Maximum duration of the complete workflow. Defaults to 600 seconds.",
+        default=10800.0,
+        help="Maximum duration of the complete workflow. Defaults to 10800 seconds.",
     )
     parser.add_argument(
-        "--research-attempts",
+        "--discovery-attempts",
         type=int,
-        default=3,
+        default=DEFAULT_DISCOVERY_ATTEMPTS,
         help=(
-            "Maximum Web research attempts before failing on insufficient "
-            "validated in-range candidates."
+            "Number of restaurant discovery attempts. "
+            f"Defaults to {DEFAULT_DISCOVERY_ATTEMPTS}."
+        ),
+    )
+    parser.add_argument(
+        "--review-enrichment-attempts",
+        type=int,
+        default=DEFAULT_REVIEW_ENRICHMENT_ATTEMPTS,
+        help=(
+            "Number of review enrichment attempts. "
+            f"Defaults to {DEFAULT_REVIEW_ENRICHMENT_ATTEMPTS}."
         ),
     )
     return parser
@@ -87,8 +100,14 @@ async def _run(args: argparse.Namespace) -> int:
         )
     if args.max_distance_km <= 0:
         raise SystemExit("--max-distance-km must be greater than zero.")
-    if args.research_attempts <= 0:
-        raise SystemExit("--research-attempts must be greater than zero.")
+    if args.discovery_attempts < 0:
+        raise SystemExit("--discovery-attempts must be zero or greater.")
+    if args.review_enrichment_attempts < 0:
+        raise SystemExit("--review-enrichment-attempts must be zero or greater.")
+    if args.discovery_attempts + args.review_enrichment_attempts <= 0:
+        raise SystemExit(
+            "At least one discovery or review enrichment attempt is required."
+        )
     if args.api_timeout_seconds <= 0:
         raise SystemExit("--api-timeout-seconds must be greater than zero.")
     if args.api_max_retries < 0:
@@ -122,7 +141,8 @@ async def _run(args: argparse.Namespace) -> int:
                 context=context,
                 model=args.model,
                 max_turns=args.max_turns,
-                research_attempts=args.research_attempts,
+                discovery_attempts=args.discovery_attempts,
+                review_enrichment_attempts=args.review_enrichment_attempts,
             )
     finally:
         await client.close()

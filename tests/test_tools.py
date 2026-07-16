@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
+from katsuo_tabetai.candidates import merge_candidate_observations
 from katsuo_tabetai.context import KatsuoContext
 from katsuo_tabetai.models import (
     HotelLocation,
@@ -361,6 +362,28 @@ def test_candidate_input_allows_incomplete_reviews_for_discovery() -> None:
     discovered = RestaurantCandidateInput.model_validate(payload)
 
     assert discovered.recent_reviews == []
+
+
+def test_candidate_observations_accumulate_independent_evidence_urls() -> None:
+    candidate = candidate_input(1)
+    url_type = type(candidate.evidence_url)
+    first_observation = candidate.model_copy(
+        update={
+            "source_urls": [url_type("https://tourism.example/restaurant/1")],
+        }
+    )
+    second_observation = candidate.model_copy(
+        update={
+            "source_urls": [url_type("https://reservation.example/restaurant/1")],
+        }
+    )
+
+    merged = merge_candidate_observations(first_observation, second_observation)
+
+    assert {url.host for url in merged.source_urls} == {
+        "tourism.example",
+        "reservation.example",
+    }
 
 
 def test_discovery_cache_saves_in_range_candidate_without_reviews_or_pages(

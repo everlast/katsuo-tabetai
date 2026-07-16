@@ -69,7 +69,7 @@ def _score_breakdown(restaurant) -> str:
         ("カツオ料理の根拠種別", breakdown.evidence, EVIDENCE_MAX_POINTS),
         ("カツオ料理の特徴", breakdown.katsuo_features, KATSUO_FEATURES_MAX_POINTS),
         (
-            "独立した料理根拠URL",
+            "独立した料理根拠ドメイン",
             breakdown.independent_sources,
             INDEPENDENT_SOURCES_MAX_POINTS,
         ),
@@ -545,7 +545,7 @@ def _score_note_html() -> str:
           <dd>料理名の掲載 {KATSUO_DISH_NAME_POINTS:g}点を基礎に、藁焼き {WARAYAKI_POINTS:g}点、塩たたき {SHIO_TATAKI_POINTS:g}点、旬の案内 {SEASONAL_KATSUO_POINTS:g}点を加算します。</dd>
         </div>
         <div>
-          <dt><strong>独立した料理根拠URL</strong><span>最大 {INDEPENDENT_SOURCES_MAX_POINTS:g}点</span></dt>
+          <dt><strong>独立した料理根拠ドメイン</strong><span>最大 {INDEPENDENT_SOURCES_MAX_POINTS:g}点</span></dt>
           <dd>根拠URLをドメイン単位で重複除外し、1ドメインにつき {INDEPENDENT_SOURCE_POINTS_PER_DOMAIN:g}点、最大 {INDEPENDENT_SOURCE_MAX_DOMAINS}ドメインまで加算します。</dd>
         </div>
         <div>

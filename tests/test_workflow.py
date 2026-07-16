@@ -214,6 +214,8 @@ def test_research_output_schema_uses_supported_url_strings() -> None:
     assert properties["evidence_url"]["type"] == "string"
     assert "format" not in properties["evidence_url"]
     assert properties["source_urls"]["items"] == {"type": "string"}
+    assert "independent domains" in properties["source_urls"]["description"]
+    assert "Do not include review-list" in properties["source_urls"]["description"]
     assert "minItems" not in properties["recent_reviews"]
     assert properties["recent_reviews"]["maxItems"] == 10
     assert "still collected" in properties["recent_reviews"]["description"]
@@ -348,17 +350,28 @@ def test_workflow_continues_after_web_research_final_output(
 
     monkeypatch.setattr("katsuo_tabetai.workflow.Runner.run", fake_run)
 
-    outcome = asyncio.run(run_katsuo_workflow(context))
+    outcome = asyncio.run(
+        run_katsuo_workflow(
+            context,
+            discovery_attempts=3,
+            review_enrichment_attempts=0,
+        )
+    )
 
-    assert called_agents == ["Katsuo Web Research Agent", "Katsuo Research Agent"]
+    assert called_agents == [
+        "Katsuo Web Research Agent",
+        "Katsuo Web Research Agent",
+        "Katsuo Web Research Agent",
+        "Katsuo Research Agent",
+    ]
     assert context.pending_candidates == candidates
     assert outcome.last_agent == "Katsuo Evaluation Agent"
     assert outcome.model == "gpt-5.6-luna"
-    assert outcome.audit.runner_calls == 2
+    assert outcome.audit.runner_calls == 4
     run_manifest = json.loads(context.run_manifest_path.read_text(encoding="utf-8"))
     assert run_manifest["model"] == "gpt-5.6-luna"
     assert run_manifest["trace_id"] == outcome.trace_id
-    assert run_manifest["audit"]["scrape_tool_calls"] == 1
+    assert run_manifest["audit"]["scrape_tool_calls"] == 3
 
 
 def test_workflow_retries_web_research_when_candidate_pool_is_insufficient(
@@ -377,7 +390,7 @@ def test_workflow_retries_web_research_when_candidate_pool_is_insufficient(
         RestaurantCandidateInput.model_validate(
             make_candidate(index).model_dump(exclude={"distance_km", "within_range"})
         )
-        for index in range(1, 6)
+        for index in range(1, 21)
     ]
     first_batch = [
         first_batch[0],
@@ -390,7 +403,7 @@ def test_workflow_retries_web_research_when_candidate_pool_is_insufficient(
         RestaurantCandidateInput.model_validate(
             make_candidate(index).model_dump(exclude={"distance_km", "within_range"})
         )
-        for index in range(2, 7)
+        for index in range(2, 8)
     ]
     populate_scraped_pages(context, [*first_batch, *second_batch])
 
@@ -450,19 +463,24 @@ def test_workflow_retries_web_research_when_candidate_pool_is_insufficient(
 
     monkeypatch.setattr("katsuo_tabetai.workflow.Runner.run", fake_run)
 
-    outcome = asyncio.run(run_katsuo_workflow(context, research_attempts=2))
+    outcome = asyncio.run(
+        run_katsuo_workflow(
+            context,
+            discovery_attempts=1,
+            review_enrichment_attempts=1,
+        )
+    )
 
     assert called_agents == [
         "Katsuo Web Research Agent",
         "Katsuo Web Research Agent",
         "Katsuo Research Agent",
     ]
-    assert len(context.pending_candidates) == 6
+    assert len(context.pending_candidates) == 7
     assert "RESEARCH MODE: DISCOVERY" in web_inputs[0]
     assert "RESEARCH MODE: ENRICHMENT" in web_inputs[1]
     assert "Enrichment targets (return each exactly once)" in web_inputs[1]
     assert "missing_reviews=5" in web_inputs[1]
-    assert "existing-review:" in web_inputs[1]
     assert "評価条件を満たす店舗が不足" in web_inputs[1]
     assert "評価可能候補は 1 店で、あと 4 店必要" in web_inputs[1]
     assert "IN RANGE" in web_inputs[1]
@@ -484,7 +502,7 @@ def test_research_starts_with_enrichment_for_incomplete_cached_pool(
         RestaurantCandidateInput.model_validate(
             make_candidate(index).model_dump(exclude={"distance_km", "within_range"})
         )
-        for index in range(1, 7)
+        for index in range(1, 21)
     ]
     repair_target = candidates[1]
     candidates = [
@@ -540,7 +558,8 @@ def test_research_starts_with_enrichment_for_incomplete_cached_pool(
             context=context,
             base_prompt="research",
             max_turns=24,
-            research_attempts=1,
+            discovery_attempts=0,
+            review_enrichment_attempts=1,
             as_of=date.today(),
         )
     )
@@ -549,7 +568,266 @@ def test_research_starts_with_enrichment_for_incomplete_cached_pool(
     assert "RESEARCH MODE: ENRICHMENT" in prompts[0]
     assert "current_reviews=4" in prompts[0]
     assert "missing_reviews=1" in prompts[0]
+    assert "current_evidence_domains=" in prompts[0]
+    assert "missing_evidence_domains=1" in prompts[0]
+    assert "existing-evidence:" in prompts[0]
     assert str(invalid_review.review_url) not in prompts[0]
+
+
+def test_enrichment_attempts_rotate_across_untried_candidates(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    context = KatsuoContext(
+        hotel=HOTEL,
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    candidates = [
+        RestaurantCandidateInput.model_validate(
+            make_candidate(index).model_dump(exclude={"distance_km", "within_range"})
+        ).model_copy(update={"recent_reviews": []})
+        for index in range(1, 22)
+    ]
+    populate_scraped_pages(context, candidates)
+    context.collected_candidates = candidates
+    prompts: list[str] = []
+
+    async def fake_research_phase(
+        agent,
+        prompt,
+        context,
+        max_turns,
+        progress_label,
+    ):
+        prompts.append(prompt)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_web_research_phase",
+        fake_research_phase,
+    )
+
+    asyncio.run(
+        workflow_module._run_research_attempts(
+            web_researcher=build_agents().web_researcher,
+            context=context,
+            base_prompt="research",
+            max_turns=24,
+            discovery_attempts=0,
+            review_enrichment_attempts=3,
+            as_of=date.today(),
+        )
+    )
+
+    target_sets: list[set[str]] = []
+    for prompt in prompts:
+        target_section = prompt.split(
+            "Enrichment targets (return each exactly once):",
+            maxsplit=1,
+        )[1].split("Previously evaluation-eligible candidates:", maxsplit=1)[0]
+        target_sets.append(
+            {
+                line.removeprefix("- ").split(" / ", maxsplit=1)[0]
+                for line in target_section.splitlines()
+                if line.startswith("- ")
+            }
+        )
+
+    assert len(prompts) == 3
+    assert all(len(targets) == 5 for targets in target_sets)
+    assert target_sets[0].isdisjoint(target_sets[1])
+    assert len(set.union(*target_sets)) == 15
+
+
+def test_nine_collected_candidates_get_three_discovery_attempts_before_enrichment(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    context = KatsuoContext(
+        hotel=HOTEL,
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    candidates = [
+        RestaurantCandidateInput.model_validate(
+            make_candidate(index).model_dump(exclude={"distance_km", "within_range"})
+        ).model_copy(update={"recent_reviews": []})
+        for index in range(1, 10)
+    ]
+    populate_scraped_pages(context, candidates)
+    context.collected_candidates = candidates
+    prompts: list[str] = []
+    progress_labels: list[str] = []
+
+    async def fake_research_phase(
+        agent,
+        prompt,
+        context,
+        max_turns,
+        progress_label,
+    ):
+        prompts.append(prompt)
+        progress_labels.append(progress_label)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_web_research_phase",
+        fake_research_phase,
+    )
+
+    asyncio.run(
+        workflow_module._run_research_attempts(
+            web_researcher=build_agents().web_researcher,
+            context=context,
+            base_prompt="research",
+            max_turns=24,
+            discovery_attempts=3,
+            review_enrichment_attempts=1,
+            as_of=date.today(),
+        )
+    )
+
+    assert [
+        "DISCOVERY" if "RESEARCH MODE: DISCOVERY" in prompt else "ENRICHMENT"
+        for prompt in prompts
+    ] == ["DISCOVERY", "DISCOVERY", "DISCOVERY", "ENRICHMENT"]
+    assert progress_labels == [
+        "店舗発見 1/3",
+        "店舗発見 2/3",
+        "店舗発見 3/3",
+        "口コミ補完 1/1",
+    ]
+
+
+def test_ready_top_five_does_not_stop_discovery_below_collection_target(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    context = KatsuoContext(
+        hotel=HOTEL,
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    candidates = [
+        RestaurantCandidateInput.model_validate(
+            make_candidate(index).model_dump(exclude={"distance_km", "within_range"})
+        )
+        for index in range(1, 10)
+    ]
+    populate_scraped_pages(context, candidates)
+    context.collected_candidates = candidates
+    context.pending_candidates = candidates[:5]
+    prompts: list[str] = []
+
+    async def fake_research_phase(
+        agent,
+        prompt,
+        context,
+        max_turns,
+        progress_label,
+    ):
+        prompts.append(prompt)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_web_research_phase",
+        fake_research_phase,
+    )
+
+    asyncio.run(
+        workflow_module._run_research_attempts(
+            web_researcher=build_agents().web_researcher,
+            context=context,
+            base_prompt="research",
+            max_turns=24,
+            discovery_attempts=3,
+            review_enrichment_attempts=7,
+            as_of=date.today(),
+        )
+    )
+
+    assert len(prompts) == 10
+    assert all("RESEARCH MODE: DISCOVERY" in prompt for prompt in prompts[:3])
+    assert all("RESEARCH MODE: ENRICHMENT" in prompt for prompt in prompts[3:])
+    assert "すでに到達済みでも" in prompts[0]
+    assert "missing_evidence_domains=1" in prompts[3]
+
+
+def test_evidence_enrichment_runs_all_attempts_after_domain_target_is_reached(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    context = KatsuoContext(
+        hotel=HOTEL,
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    candidates = [
+        RestaurantCandidateInput.model_validate(
+            make_candidate(index).model_dump(exclude={"distance_km", "within_range"})
+        )
+        for index in range(1, 21)
+    ]
+    populate_scraped_pages(context, candidates)
+    context.collected_candidates = candidates
+    context.pending_candidates = candidates[:5]
+    prompts: list[str] = []
+
+    async def fake_research_phase(
+        agent,
+        prompt,
+        context,
+        max_turns,
+        progress_label,
+    ):
+        prompts.append(prompt)
+        enriched = [
+            candidate.model_copy(
+                update={
+                    "source_urls": [
+                        *candidate.source_urls,
+                        type(candidate.evidence_url)(
+                            f"https://reservation-{index}.example/menu"
+                        ),
+                    ]
+                }
+            )
+            for index, candidate in enumerate(
+                context.pending_candidates,
+                start=1,
+            )
+        ]
+        context.pending_candidates = enriched
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "run_web_research_phase",
+        fake_research_phase,
+    )
+
+    asyncio.run(
+        workflow_module._run_research_attempts(
+            web_researcher=build_agents().web_researcher,
+            context=context,
+            base_prompt="research",
+            max_turns=24,
+            discovery_attempts=0,
+            review_enrichment_attempts=10,
+            as_of=date.today(),
+        )
+    )
+
+    assert len(prompts) == 10
+    assert "RESEARCH MODE: ENRICHMENT" in prompts[0]
+    assert "missing_evidence_domains=1" in prompts[0]
+    assert all(
+        candidate.name in prompts[0] for candidate in candidates[:5]
+    )
 
 
 def test_workflow_caches_partial_pool_when_attempt_limit_is_reached(
@@ -592,7 +870,13 @@ def test_workflow_caches_partial_pool_when_attempt_limit_is_reached(
     monkeypatch.setattr("katsuo_tabetai.workflow.Runner.run", fake_run)
 
     with pytest.raises(InsufficientResearchCandidatesError, match="Received 4"):
-        asyncio.run(run_katsuo_workflow(context, research_attempts=1))
+        asyncio.run(
+            run_katsuo_workflow(
+                context,
+                discovery_attempts=1,
+                review_enrichment_attempts=0,
+            )
+        )
 
     assert context.cached_candidates_written == 4
     assert len(list(context.restaurant_cache_dir.glob("*.json"))) == 4
@@ -675,7 +959,13 @@ def test_workflow_retries_web_research_after_malformed_structured_output(
 
     monkeypatch.setattr("katsuo_tabetai.workflow.Runner.run", fake_run)
 
-    outcome = asyncio.run(run_katsuo_workflow(context, research_attempts=2))
+    outcome = asyncio.run(
+        run_katsuo_workflow(
+            context,
+            discovery_attempts=2,
+            review_enrichment_attempts=0,
+        )
+    )
 
     assert called_agents == [
         "Katsuo Web Research Agent",
@@ -722,7 +1012,13 @@ def test_workflow_reports_malformed_structured_output_after_retry_limit(
         InvalidResearchOutputError,
         match="malformed structured JSON after 2 attempt",
     ) as exc_info:
-        asyncio.run(run_katsuo_workflow(context, research_attempts=2))
+        asyncio.run(
+            run_katsuo_workflow(
+                context,
+                discovery_attempts=2,
+                review_enrichment_attempts=0,
+            )
+        )
 
     assert called_agents == [
         "Katsuo Web Research Agent",
@@ -802,3 +1098,6 @@ def test_web_researcher_requires_reviews_from_at_least_two_platforms() -> None:
     assert "Review platforms drive candidate discovery" in instructions
     assert "official sources strengthen dish evidence" in instructions
     assert "official sources" in instructions and "never count as reviews" in instructions
+    assert "Aim for at least 20 candidates" in instructions
+    assert "at least 3 independent domains" in instructions
+    assert "up to 5 domains" in instructions

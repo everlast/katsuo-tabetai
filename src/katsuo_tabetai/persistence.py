@@ -31,7 +31,7 @@ from .models import (
     TopFiveStore,
 )
 from .report import render_context_markdown, render_top_five_html
-from .scoring import apply_range_rule, rank_top_five
+from .scoring import apply_range_rule, rank_restaurants
 from .scraping import canonical_url
 
 
@@ -337,7 +337,7 @@ def create_top_five_report(context: KatsuoContext) -> dict[str, object]:
     candidates = CandidateStore.model_validate_json(
         context.candidates_path.read_text(encoding="utf-8")
     )
-    ranked = rank_top_five(candidates.candidates, candidates.max_distance_km)
+    ranked = rank_restaurants(candidates.candidates, candidates.max_distance_km)
     report = TopFiveStore(
         generated_at=datetime.now(timezone.utc),
         model=candidates.model,
@@ -345,7 +345,8 @@ def create_top_five_report(context: KatsuoContext) -> dict[str, object]:
         context_markdown=candidates.context_markdown,
         hotel=candidates.hotel,
         max_distance_km=candidates.max_distance_km,
-        restaurants=ranked,
+        restaurants=ranked[:5],
+        additional_restaurants=ranked[5:],
     )
     context.top_five_path.write_text(
         report.model_dump_json(indent=2),
@@ -356,5 +357,6 @@ def create_top_five_report(context: KatsuoContext) -> dict[str, object]:
         "status": "completed",
         "top_five_json": str(context.top_five_path),
         "html": str(context.html_path),
-        "restaurant_names": [item.name for item in ranked],
+        "restaurant_names": [item.name for item in ranked[:5]],
+        "additional_restaurant_names": [item.name for item in ranked[5:]],
     }

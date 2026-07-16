@@ -110,8 +110,8 @@ outputs/
 ├── context.md                  # 検証済み情報のMarkdownリスト
 ├── scrape_manifest.json        # 取得URL、時刻、最終URL、本文SHA-256
 ├── run_manifest.json           # モデル、trace ID、ツール実行監査
-├── top5.json                    # 採点、レビュー評判、推薦理由を含む上位5店
-└── top5.html                    # 推薦理由と新着レビューを読めるランキング
+├── top5.json                    # 上位5店の詳細と6位以下の採点結果
+└── top5.html                    # TOP 5詳細と6位以下の簡易リスト
 ```
 
 候補JSONの主要フィールドは`name`, `address`, `latitude`, `longitude`, `katsuo_dish`, `evidence_url`, `evidence_source_type`, `source_urls`, `recent_reviews`, `distance_km`, `within_range`です。`recent_reviews`の各要素には`source_name`, `review_url`, `reviewer_name`, `published_at`, `rating`, `summary`, `positive_points`, `caution_points`が入ります。取得本文は候補JSONと店舗キャッシュに保持し、`scrape_manifest.json`には本文を重複保存せず監査メタデータだけを書きます。

@@ -260,3 +260,4 @@ class RankedRestaurant(RestaurantCandidate):
 
 class TopFiveStore(StoreHeader):
     restaurants: list[RankedRestaurant] = Field(min_length=5, max_length=5)
+    additional_restaurants: list[RankedRestaurant] = Field(default_factory=list)

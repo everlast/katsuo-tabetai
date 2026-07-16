@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 
 from katsuo_tabetai.models import HotelLocation, TopFiveStore
 from katsuo_tabetai.report import render_top_five_html
-from katsuo_tabetai.scoring import rank_top_five
+from katsuo_tabetai.scoring import rank_restaurants
 
 from test_scoring import make_candidate
 
@@ -17,7 +17,8 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
         latitude=33.566927593644714,
         longitude=133.54104073018118,
     )
-    restaurants = rank_top_five([make_candidate(i) for i in range(1, 7)], 2.5)
+    ranked = rank_restaurants([make_candidate(i) for i in range(1, 9)], 2.5)
+    restaurants = ranked[:5]
     report = TopFiveStore(
         generated_at=datetime.now(timezone.utc),
         model="gpt-5.6-luna",
@@ -25,6 +26,7 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
         hotel=hotel,
         max_distance_km=2.5,
         restaurants=restaurants,
+        additional_restaurants=ranked[5:],
     )
     output = tmp_path / "top5.html"
 
@@ -50,6 +52,9 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
         assert label in html
     assert "独立した料理根拠URL" not in html
     assert html.count('class="restaurant"') == 5
+    assert html.count('class="additional-ranking-item"') == 3
+    assert '<ol start="6">' in html
+    assert 'id="additional-ranking-title">6位以下</h2>' in html
     assert "--rank: #004AAD;" in html
     assert "background: var(--rank);" in html
     assert 'class="ranking-index"' in html
@@ -66,6 +71,8 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
     ):
         assert explanation in html
     assert html.rfind('class="restaurant"') < html.index('class="score-note"')
+    assert html.rfind('class="restaurant"') < html.index('class="additional-ranking"')
+    assert html.index('class="additional-ranking"') < html.index('class="score-note"')
     assert html.index('class="ranking-index"') < html.index('class="restaurant"')
     review_details = document.select("section.review-section > details.reviews-details")
     assert len(review_details) == len(restaurants)
@@ -109,3 +116,16 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
                 f"{review.published_at.isoformat()}</span>"
                 not in html
             )
+
+    additional = document.select_one("section.additional-ranking")
+    assert additional is not None
+    items = additional.select("li.additional-ranking-item")
+    assert [item["value"] for item in items] == ["6", "7", "8"]
+    for item, restaurant in zip(items, ranked[5:], strict=True):
+        text = item.get_text(" ", strip=True)
+        assert restaurant.name in text
+        assert restaurant.katsuo_dish in text
+        assert f"ホテルから {restaurant.distance_km:.2f} km" in text
+        assert f"平均評価 {restaurant.review_reputation.average_rating:.2f} / 5" in text
+        assert f"{restaurant.score:.2f}" in text
+        assert item.select_one("section.review-section") is None

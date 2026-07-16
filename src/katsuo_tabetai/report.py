@@ -127,7 +127,7 @@ def _review_row(review) -> str:
               <li class="review-item">
                 <div class="review-meta">
                   <strong>{review.rating:.1f} / 5</strong>
-                  <span>{escape(review.source_name)} · {review_month}</span>
+                  <span>{escape(review.source_name)} · {escape(review.reviewer_name)} · {review_month}</span>
                 </div>
                 <p>{escape(review.summary)}</p>
                 <div class="review-points">{positives}</div>
@@ -138,6 +138,13 @@ def _review_row(review) -> str:
 
 def _restaurant_row(restaurant) -> str:
     evidence_url = escape(str(restaurant.evidence_url), quote=True)
+    additional_sources = "".join(
+        '<li><a href="{}" target="_blank" rel="noreferrer">追加根拠 {}</a></li>'.format(
+            escape(str(source_url), quote=True),
+            index,
+        )
+        for index, source_url in enumerate(restaurant.source_urls, start=1)
+    )
     features = ["カツオ料理の掲載あり"]
     if restaurant.has_warayaki:
         features.append("藁焼き")
@@ -181,6 +188,7 @@ def _restaurant_row(restaurant) -> str:
           <p class="address">{escape(restaurant.address)} · ホテルから {restaurant.distance_km:.2f} km</p>
           <ul class="features">{feature_html}</ul>
           <a class="evidence" href="{evidence_url}" target="_blank" rel="noreferrer">カツオ料理の根拠ページを開く</a>
+          <ul class="source-links">{additional_sources}</ul>
           <section class="review-section" aria-labelledby="reviews-{restaurant.rank}">
             <div class="review-heading">
               <div>
@@ -274,7 +282,7 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
     .stamp strong {{ display: block; font-size: 20px; }}
     .criteria {{
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       border-bottom: 1px solid var(--line);
       background: var(--ink);
       color: var(--white);
@@ -404,6 +412,8 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
     }}
     .evidence:hover {{ color: var(--bonito); }}
     .evidence:focus-visible {{ outline: 3px solid var(--market); outline-offset: 4px; }}
+    .source-links {{ display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0 0; padding: 0; list-style: none; }}
+    .source-links a {{ color: var(--muted); font-size: 12px; }}
     .review-section {{ margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--line); }}
     .review-heading {{ display: flex; justify-content: space-between; gap: 24px; align-items: end; }}
     .review-label {{ margin: 0 0 5px; color: var(--bonito); font: 700 11px/1.4 "SFMono-Regular", Menlo, monospace; }}
@@ -511,6 +521,7 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
     <div class="criteria" aria-label="検索条件">
       <div><span>基準地点</span><strong>{escape(report.hotel.name)}</strong></div>
       <div><span>直線距離の上限</span><strong>{report.max_distance_km:.2f} km</strong></div>
+      <div><span>実行モデル</span><strong>{escape(report.model)}</strong></div>
       <div><span>生成日時</span><strong>{escape(generated)}</strong></div>
     </div>
   </header>
@@ -554,7 +565,8 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
     </aside>
   </main>
   <footer>
-    距離は緯度経度からHaversine式で計算した直線距離です。レビューは生成日時から365日以内に公開・訪問されたものを要約し、原文ではなく根拠リンクを掲載しています。根拠ページに年月までしかない場合は月初として新着判定し、画面には年月まで表示します。営業日・提供メニュー・評判は変わるため、来店前に各ページで最新情報を確認してください。
+    <p>Model: {escape(report.model)} · Trace: {escape(report.trace_id)} · <a href="{escape(report.context_markdown, quote=True)}">検証済みMarkdownコンテキスト</a></p>
+    <p>距離は緯度経度からHaversine式で計算した直線距離です。レビューは生成日時から365日以内に公開・訪問されたものを要約し、原文ではなく根拠リンクを掲載しています。根拠ページに年月までしかない場合は月初として新着判定し、画面には年月まで表示します。営業日・提供メニュー・評判は変わるため、来店前に各ページで最新情報を確認してください。</p>
   </footer>
 </body>
 </html>

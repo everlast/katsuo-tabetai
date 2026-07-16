@@ -18,6 +18,8 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
     restaurants = rank_top_five([make_candidate(i) for i in range(1, 7)], 2.5)
     report = TopFiveStore(
         generated_at=datetime.now(timezone.utc),
+        model="gpt-5.6-luna",
+        trace_id="trace_test",
         hotel=hotel,
         max_distance_km=2.5,
         restaurants=restaurants,
@@ -65,6 +67,8 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
         assert f'href="#restaurant-{restaurant.rank}"' in html
         assert restaurant.name in html
         assert str(restaurant.evidence_url) in html
+        for source_url in restaurant.source_urls:
+            assert str(source_url) in html
         assert restaurant.recommendation_reason in html
         assert "新着レビューから見た評判" in html
         assert f"{restaurant.score_breakdown.evidence:.2f} / 25" in html
@@ -76,8 +80,12 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
         for review in restaurant.recent_reviews:
             assert str(review.review_url) in html
             assert review.summary in html
-            assert f"{review.source_name} · {review.published_at:%Y-%m}</span>" in html
             assert (
-                f"{review.source_name} · {review.published_at.isoformat()}</span>"
+                f"{review.source_name} · {review.reviewer_name} · "
+                f"{review.published_at:%Y-%m}</span>"
+            ) in html
+            assert (
+                f"{review.source_name} · {review.reviewer_name} · "
+                f"{review.published_at.isoformat()}</span>"
                 not in html
             )

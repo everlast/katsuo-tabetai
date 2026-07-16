@@ -34,6 +34,7 @@ def make_reviews(index: int, rating: float | None = None) -> list[RecentReview]:
     return [
         RecentReview(
             source_name="Review A" if review_index < 2 else "Review B",
+            reviewer_name=f"Reviewer {index}-{review_index}",
             review_url=(
                 f"https://reviews-{review_index % 2}.example/"
                 f"restaurant/{index}/review/{review_index}"
@@ -54,6 +55,7 @@ def make_reviews(index: int, rating: float | None = None) -> list[RecentReview]:
 def test_review_points_remove_structured_output_artifacts() -> None:
     review = RecentReview(
         source_name="Review A",
+        reviewer_name="Reviewer 1",
         review_url="https://reviews.example/restaurant/1/review/1",
         published_at=date.today(),
         rating=4.0,
@@ -76,6 +78,7 @@ def test_review_points_remove_structured_output_artifacts() -> None:
 def test_review_points_split_concatenated_array_values() -> None:
     review = RecentReview(
         source_name="Review A",
+        reviewer_name="Reviewer 1",
         review_url="https://reviews.example/restaurant/1/review/1",
         published_at=date.today(),
         rating=4.0,

@@ -4,22 +4,30 @@ import hashlib
 import json
 import re
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
 from agents import AgentBase, RunContextWrapper, function_tool
 
 from .context import KatsuoContext
+from .evidence import (
+    sanitize_candidate_claims,
+    scraped_pages_for_candidate,
+    validate_candidate_references,
+)
 from .models import (
     CandidateStore,
     RecentReview,
     RestaurantCandidate,
     RestaurantCacheEntry,
     RestaurantCandidateInput,
+    ScrapedPage,
     TopFiveStore,
 )
 from .report import render_top_five_html
 from .scoring import apply_range_rule, haversine_km, normalized_url_host, rank_top_five
+from .scraping import canonical_url
 
 RECENT_REVIEW_MAX_AGE_DAYS = 365
 MIN_RECENT_REVIEW_COUNT = 5
@@ -51,13 +59,19 @@ def _is_same_restaurant_location(
     existing: RestaurantCandidateInput,
     candidate: RestaurantCandidateInput,
 ) -> bool:
-    if _normalize_identity_text(existing.name) != _normalize_identity_text(
-        candidate.name
-    ):
+    existing_name = _normalize_identity_text(existing.name)
+    candidate_name = _normalize_identity_text(candidate.name)
+    names_match = existing_name == candidate_name
+    addresses_match = _normalize_identity_text(
+        existing.address
+    ) == _normalize_identity_text(candidate.address)
+    name_is_qualified_alias = (
+        min(len(existing_name), len(candidate_name)) >= 4
+        and (existing_name in candidate_name or candidate_name in existing_name)
+    )
+    if not names_match and not (addresses_match and name_is_qualified_alias):
         return False
-    if _normalize_identity_text(existing.address) == _normalize_identity_text(
-        candidate.address
-    ):
+    if addresses_match:
         return True
     distance = haversine_km(
         existing.latitude,
@@ -95,6 +109,82 @@ def merge_restaurant_candidates(
         else:
             merged.append(candidate)
     return merged
+
+
+def _review_fingerprint(review: RecentReview) -> tuple[str, str, date, float]:
+    return (
+        canonical_url(review.review_url),
+        "".join(review.reviewer_name.casefold().split()),
+        review.published_at,
+        review.rating,
+    )
+
+
+def _merge_candidate_observations(
+    existing: RestaurantCandidateInput,
+    incoming: RestaurantCandidateInput,
+) -> RestaurantCandidateInput:
+    reviews: dict[tuple[str, str, date, float], RecentReview] = {}
+    for review in [*incoming.recent_reviews, *existing.recent_reviews]:
+        reviews.setdefault(_review_fingerprint(review), review)
+    recent_reviews = sorted(
+        reviews.values(),
+        key=lambda review: review.published_at,
+        reverse=True,
+    )[:10]
+
+    source_urls: dict[str, object] = {}
+    for source_url in [*incoming.source_urls, *existing.source_urls]:
+        source_urls.setdefault(canonical_url(source_url), source_url)
+
+    source_priority = {
+        "review_site": 0,
+        "reservation_site": 1,
+        "official_tourism": 2,
+        "official_restaurant": 3,
+    }
+
+    def observation_quality(candidate: RestaurantCandidateInput) -> tuple[int, int, int]:
+        return (
+            len(candidate.recent_reviews),
+            len(candidate.source_urls),
+            source_priority[candidate.evidence_source_type.value],
+        )
+
+    # Broad discovery often returns only a location and no reviews. Keep the
+    # richer primary observation in that case; let equally rich fresh data win.
+    base = (
+        incoming
+        if observation_quality(incoming) >= observation_quality(existing)
+        else existing
+    )
+    return base.model_copy(
+        update={
+            "source_urls": list(source_urls.values()),
+            "recent_reviews": recent_reviews,
+            "has_warayaki": existing.has_warayaki or incoming.has_warayaki,
+            "has_shio_tataki": existing.has_shio_tataki
+            or incoming.has_shio_tataki,
+            "has_seasonal_katsuo": existing.has_seasonal_katsuo
+            or incoming.has_seasonal_katsuo,
+        }
+    )
+
+
+def accumulate_restaurant_candidates(
+    existing_candidates: list[RestaurantCandidateInput],
+    incoming_candidates: list[RestaurantCandidateInput],
+) -> list[RestaurantCandidateInput]:
+    """Accumulate discovery observations without losing earlier review data."""
+    accumulated = list(existing_candidates)
+    for candidate in incoming_candidates:
+        for index, existing in enumerate(accumulated):
+            if _is_same_restaurant_location(existing, candidate):
+                accumulated[index] = _merge_candidate_observations(existing, candidate)
+                break
+        else:
+            accumulated.append(candidate)
+    return accumulated
 
 
 def _candidate_cache_filename(candidate: RestaurantCandidateInput) -> str:
@@ -142,7 +232,7 @@ def insufficient_candidate_pool_message(
     max_distance_km: float,
 ) -> str:
     return (
-        "Save rejected: provide at least "
+        "Evaluation stopped: provide at least "
         f"{MIN_IN_RANGE_CANDIDATES} unique restaurants inside the "
         f"{max_distance_km:.2f} km range. "
         f"Received {summary.unique_candidates} unique and "
@@ -155,7 +245,7 @@ def _filter_valid_reviews(
     as_of: date,
 ) -> tuple[list[RecentReview], list[str]]:
     oldest_allowed = as_of - timedelta(days=RECENT_REVIEW_MAX_AGE_DAYS)
-    fingerprints: set[tuple[date, str]] = set()
+    fingerprints: set[tuple[str, str, date, float]] = set()
     valid_reviews: list[RecentReview] = []
     issues: list[str] = []
     for review in candidate.recent_reviews:
@@ -170,10 +260,7 @@ def _filter_valid_reviews(
                 f"({review.published_at.isoformat()})"
             )
             continue
-        fingerprint = (
-            review.published_at,
-            "".join(review.summary.casefold().split()),
-        )
+        fingerprint = _review_fingerprint(review)
         if fingerprint in fingerprints:
             issues.append(
                 f"a duplicate review dated {review.published_at.isoformat()}"
@@ -187,6 +274,7 @@ def _filter_valid_reviews(
 def _validate_recent_reviews(
     candidates: list[RestaurantCandidateInput],
     as_of: date,
+    context: KatsuoContext,
 ) -> None:
     for candidate in candidates:
         valid_reviews, issues = _filter_valid_reviews(candidate, as_of)
@@ -200,11 +288,15 @@ def _validate_recent_reviews(
                 f"Save rejected: {candidate.name} has reviews from fewer than "
                 f"{MIN_REVIEW_SOURCE_SITES} source sites (URL domains)."
             )
+        reference_issues = validate_candidate_references(candidate, context.scraped_pages)
+        if reference_issues:
+            raise ValueError(f"Save rejected: {candidate.name} has {reference_issues[0]}.")
 
 
 def partition_candidates_by_review_validity(
     candidates: list[RestaurantCandidateInput],
     as_of: date,
+    scraped_pages: Mapping[str, ScrapedPage] | None = None,
 ) -> tuple[list[RestaurantCandidateInput], list[str]]:
     """Separate candidates that can be persisted from invalid research output."""
     accepted: list[RestaurantCandidateInput] = []
@@ -216,7 +308,7 @@ def partition_candidates_by_review_validity(
             if len(issues) > 3:
                 issue_detail += f"; and {len(issues) - 3} more issue(s)"
             rejections.append(
-                f"Save rejected: {candidate.name} has only {len(valid_reviews)} "
+                f"Evaluation excluded: {candidate.name} has only {len(valid_reviews)} "
                 "valid recent reviews after filtering; at least "
                 f"{MIN_RECENT_REVIEW_COUNT} required. Removed: {issue_detail}."
             )
@@ -226,10 +318,22 @@ def partition_candidates_by_review_validity(
         }
         if len(review_source_sites) < MIN_REVIEW_SOURCE_SITES:
             rejections.append(
-                f"Save rejected: {candidate.name} has reviews from fewer than "
+                f"Evaluation excluded: {candidate.name} has reviews from fewer than "
                 f"{MIN_REVIEW_SOURCE_SITES} source sites (URL domains) after filtering."
             )
             continue
+        if scraped_pages is not None:
+            candidate = sanitize_candidate_claims(candidate, scraped_pages)
+            reference_issues = validate_candidate_references(candidate, scraped_pages)
+            if reference_issues:
+                issue_detail = "; ".join(reference_issues[:3])
+                if len(reference_issues) > 3:
+                    issue_detail += f"; and {len(reference_issues) - 3} more issue(s)"
+                rejections.append(
+                    f"Evaluation excluded: {candidate.name} has unverified references: "
+                    f"{issue_detail}."
+                )
+                continue
         accepted.append(candidate.model_copy(update={"recent_reviews": valid_reviews}))
     return accepted, rejections
 
@@ -239,22 +343,51 @@ def cache_restaurant_candidates(
     candidates: list[RestaurantCandidateInput],
     updated_at: datetime | None = None,
 ) -> int:
-    """Persist one independently reusable JSON file per restaurant."""
-    unique_candidates = deduplicate_restaurant_candidates(candidates)
-    if not unique_candidates:
+    """Persist every discovered restaurant inside the configured radius."""
+    discovered_candidates = [
+        candidate
+        for candidate in deduplicate_restaurant_candidates(candidates)
+        if apply_range_rule(
+            candidate,
+            context.hotel,
+            context.max_distance_km,
+        ).within_range
+    ]
+    if not discovered_candidates:
         return 0
     context.restaurant_cache_dir.mkdir(parents=True, exist_ok=True)
     cache_timestamp = updated_at or datetime.now(timezone.utc)
-    for candidate in unique_candidates:
+    for candidate in discovered_candidates:
+        cache_path = context.restaurant_cache_dir / _candidate_cache_filename(candidate)
+        existing_pages: list[ScrapedPage] = []
+        if cache_path.exists():
+            try:
+                existing_entry = RestaurantCacheEntry.model_validate_json(
+                    cache_path.read_text(encoding="utf-8")
+                )
+            except ValueError:
+                pass
+            else:
+                candidate = _merge_candidate_observations(
+                    existing_entry.candidate,
+                    candidate,
+                )
+                existing_pages = existing_entry.scraped_pages
+
+        pages_by_url = {
+            canonical_url(page.requested_url): page for page in existing_pages
+        }
+        for page in scraped_pages_for_candidate(candidate, context.scraped_pages):
+            pages_by_url[canonical_url(page.requested_url)] = page
         entry = RestaurantCacheEntry(
             updated_at=cache_timestamp,
             candidate=candidate,
+            scraped_pages=list(pages_by_url.values()),
         )
-        cache_path = context.restaurant_cache_dir / _candidate_cache_filename(candidate)
         temporary_path = cache_path.with_suffix(".json.tmp")
         temporary_path.write_text(entry.model_dump_json(indent=2), encoding="utf-8")
         temporary_path.replace(cache_path)
-    return len(unique_candidates)
+    return len(discovered_candidates)
 
 
 def _bootstrap_restaurant_cache(context: KatsuoContext) -> str | None:
@@ -276,6 +409,8 @@ def _bootstrap_restaurant_cache(context: KatsuoContext) -> str | None:
         )
         for candidate in store.candidates
     ]
+    for page in store.scraped_pages:
+        context.scraped_pages[canonical_url(page.requested_url)] = page
     cache_restaurant_candidates(context, candidates, updated_at=store.generated_at)
     return None
 
@@ -284,7 +419,7 @@ def load_cached_restaurant_candidates(
     context: KatsuoContext,
     as_of: date,
 ) -> tuple[list[RestaurantCandidateInput], list[str]]:
-    """Load cached restaurants that remain review-valid and in the current range."""
+    """Load every cached discovery that remains inside the current range."""
     rejections: list[str] = []
     bootstrap_error = _bootstrap_restaurant_cache(context)
     if bootstrap_error:
@@ -302,51 +437,136 @@ def load_cached_restaurant_candidates(
             )
         except ValueError as exc:
             rejections.append(f"Cache ignored: {cache_path.name} is invalid: {exc}")
-    entries.sort(key=lambda entry: entry.updated_at.isoformat(), reverse=True)
-    cached_candidates = deduplicate_restaurant_candidates(
-        [entry.candidate for entry in entries]
+    entries.sort(key=lambda entry: entry.updated_at.isoformat())
+    for entry in entries:
+        for page in entry.scraped_pages:
+            context.scraped_pages[canonical_url(page.requested_url)] = page
+    cached_candidates = accumulate_restaurant_candidates(
+        [],
+        [entry.candidate for entry in entries],
     )
-    review_valid, review_rejections = partition_candidates_by_review_validity(
-        cached_candidates,
-        as_of,
-    )
-    rejections.extend(review_rejections)
     in_range = [
         candidate
-        for candidate in review_valid
+        for candidate in cached_candidates
         if apply_range_rule(candidate, context.hotel, context.max_distance_km).within_range
     ]
     return in_range, rejections
+
+
+def persist_discovered_restaurants(
+    context: KatsuoContext,
+    as_of: date,
+) -> dict[str, int]:
+    """Write the full discovery pool and its separate evaluation status."""
+    records: list[dict[str, object]] = []
+    evaluation_eligible = 0
+    for candidate in deduplicate_restaurant_candidates(context.collected_candidates):
+        ranged = apply_range_rule(candidate, context.hotel, context.max_distance_km)
+        if not ranged.within_range:
+            continue
+        accepted, issues = partition_candidates_by_review_validity(
+            [candidate],
+            as_of,
+            context.scraped_pages,
+        )
+        is_eligible = bool(accepted)
+        evaluation_eligible += is_eligible
+        records.append(
+            {
+                "candidate": ranged.model_dump(mode="json"),
+                "evaluation_eligible": is_eligible,
+                "evaluation_issues": issues,
+            }
+        )
+
+    context.output_dir.mkdir(parents=True, exist_ok=True)
+    context.discovered_candidates_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "model": context.model,
+                "trace_id": context.trace_id,
+                "hotel": context.hotel.model_dump(mode="json"),
+                "max_distance_km": context.max_distance_km,
+                "collected_count": len(records),
+                "evaluation_eligible_count": evaluation_eligible,
+                "restaurants": records,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "collected": len(records),
+        "evaluation_eligible": evaluation_eligible,
+    }
 
 
 def persist_restaurant_candidates(
     context: KatsuoContext,
     candidates: list[RestaurantCandidateInput],
 ) -> dict[str, object]:
-    deduplicated = deduplicate_restaurant_candidates(candidates)
+    deduplicated = deduplicate_restaurant_candidates(
+        [
+            sanitize_candidate_claims(candidate, context.scraped_pages)
+            for candidate in candidates
+        ]
+    )
     generated_at = datetime.now(timezone.utc)
-    _validate_recent_reviews(deduplicated, generated_at.date())
+    _validate_recent_reviews(deduplicated, generated_at.date(), context)
     summary = _summarize_deduplicated_candidate_pool(context, deduplicated)
     if not summary.is_ready:
         raise ValueError(
             insufficient_candidate_pool_message(summary, context.max_distance_km)
         )
 
+    stored_pages: dict[str, ScrapedPage] = {}
+    for candidate in deduplicated:
+        for page in scraped_pages_for_candidate(candidate, context.scraped_pages):
+            stored_pages[canonical_url(page.requested_url)] = page
     store = CandidateStore(
         generated_at=generated_at,
+        model=context.model,
+        trace_id=context.trace_id,
         hotel=context.hotel,
         max_distance_km=context.max_distance_km,
         candidates=summary.candidates,
+        scraped_pages=list(stored_pages.values()),
     )
     context.output_dir.mkdir(parents=True, exist_ok=True)
     context.candidates_path.write_text(
         store.model_dump_json(indent=2),
         encoding="utf-8",
     )
+    context.context_markdown_path.write_text(
+        render_context_markdown(store),
+        encoding="utf-8",
+    )
+    context.scrape_manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": generated_at.isoformat(),
+                "model": context.model,
+                "trace_id": context.trace_id,
+                "pages": [
+                    page.model_dump(mode="json", exclude={"content"})
+                    for page in store.scraped_pages
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     context.candidates_saved = True
     return {
         "status": "saved",
         "path": str(context.candidates_path),
+        "context_markdown": str(context.context_markdown_path),
+        "scrape_manifest": str(context.scrape_manifest_path),
         "unique_candidates": summary.unique_candidates,
         "within_range": summary.within_range,
         "outside_range": summary.outside_range,
@@ -389,6 +609,9 @@ def create_top_five_report(context: KatsuoContext) -> dict[str, object]:
     ranked = rank_top_five(candidates.candidates, candidates.max_distance_km)
     report = TopFiveStore(
         generated_at=datetime.now(timezone.utc),
+        model=candidates.model,
+        trace_id=candidates.trace_id,
+        context_markdown=candidates.context_markdown,
         hotel=candidates.hotel,
         max_distance_km=candidates.max_distance_km,
         restaurants=ranked,
@@ -415,3 +638,52 @@ def evaluate_and_render_top_five(
     result = create_top_five_report(context)
     context.evaluation_tool_calls += 1
     return json.dumps(result, ensure_ascii=False)
+
+
+def render_context_markdown(store: CandidateStore) -> str:
+    lines = [
+        "# Katsuo Restaurant Context",
+        "",
+        f"- Generated at: `{store.generated_at.isoformat()}`",
+        f"- Model: `{store.model}`",
+        f"- Trace ID: `{store.trace_id}`",
+        f"- Hotel: {store.hotel.name}",
+        f"- Maximum straight-line distance: {store.max_distance_km:.2f} km",
+        "",
+        "## Verified Restaurant Candidates",
+        "",
+    ]
+    for index, candidate in enumerate(store.candidates, start=1):
+        feature_labels = ["katsuo dish"]
+        if candidate.has_warayaki:
+            feature_labels.append("warayaki")
+        if candidate.has_shio_tataki:
+            feature_labels.append("shio tataki")
+        if candidate.has_seasonal_katsuo:
+            feature_labels.append("seasonal katsuo")
+        lines.extend(
+            [
+                f"{index}. **{candidate.name}**",
+                f"   - Address: {candidate.address}",
+                f"   - Coordinates: {candidate.latitude}, {candidate.longitude}",
+                f"   - Distance: {candidate.distance_km:.2f} km",
+                f"   - Katsuo dish: {candidate.katsuo_dish}",
+                f"   - Verified features: {', '.join(feature_labels)}",
+                f"   - Evidence: [{candidate.evidence_url}]({candidate.evidence_url})",
+                "   - Additional verified sources:",
+                *(
+                    f"     - [{source_url}]({source_url})"
+                    for source_url in candidate.source_urls
+                ),
+                "   - Verified reviews:",
+            ]
+        )
+        for review in candidate.recent_reviews:
+            lines.append(
+                "     - "
+                f"{review.published_at.isoformat()} | {review.rating:g}/5 | "
+                f"{review.reviewer_name} | {review.source_name} | "
+                f"[{review.review_url}]({review.review_url}) | {review.summary}"
+            )
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"

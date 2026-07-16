@@ -17,6 +17,7 @@ from .evidence import (
     validate_candidate_references,
 )
 from .models import (
+    EVIDENCE_SOURCE_PRIORITY,
     CandidateStore,
     RecentReview,
     RestaurantCandidate,
@@ -51,20 +52,40 @@ class CandidatePoolSummary:
         )
 
 
-def _normalize_identity_text(value: str) -> str:
+def normalize_identity_text(value: str) -> str:
+    """Normalize a name or address into a whitespace-free identity key."""
     return "".join(value.casefold().split())
+
+
+def summarize_issue_list(issues: list[str], noun: str) -> str:
+    """Join the first three issues and note how many more were omitted."""
+    summary = "; ".join(issues[:3])
+    if len(issues) > 3:
+        summary += f"; and {len(issues) - 3} more {noun}"
+    return summary
+
+
+def candidate_within_range(
+    context: KatsuoContext,
+    candidate: RestaurantCandidateInput,
+) -> bool:
+    return apply_range_rule(
+        candidate,
+        context.hotel,
+        context.max_distance_km,
+    ).within_range
 
 
 def _is_same_restaurant_location(
     existing: RestaurantCandidateInput,
     candidate: RestaurantCandidateInput,
 ) -> bool:
-    existing_name = _normalize_identity_text(existing.name)
-    candidate_name = _normalize_identity_text(candidate.name)
+    existing_name = normalize_identity_text(existing.name)
+    candidate_name = normalize_identity_text(candidate.name)
     names_match = existing_name == candidate_name
-    addresses_match = _normalize_identity_text(
+    addresses_match = normalize_identity_text(
         existing.address
-    ) == _normalize_identity_text(candidate.address)
+    ) == normalize_identity_text(candidate.address)
     name_is_qualified_alias = (
         min(len(existing_name), len(candidate_name)) >= 4
         and (existing_name in candidate_name or candidate_name in existing_name)
@@ -114,7 +135,7 @@ def merge_restaurant_candidates(
 def _review_fingerprint(review: RecentReview) -> tuple[str, str, date, float]:
     return (
         canonical_url(review.review_url),
-        "".join(review.reviewer_name.casefold().split()),
+        normalize_identity_text(review.reviewer_name),
         review.published_at,
         review.rating,
     )
@@ -137,18 +158,11 @@ def _merge_candidate_observations(
     for source_url in [*incoming.source_urls, *existing.source_urls]:
         source_urls.setdefault(canonical_url(source_url), source_url)
 
-    source_priority = {
-        "review_site": 0,
-        "reservation_site": 1,
-        "official_tourism": 2,
-        "official_restaurant": 3,
-    }
-
     def observation_quality(candidate: RestaurantCandidateInput) -> tuple[int, int, int]:
         return (
             len(candidate.recent_reviews),
             len(candidate.source_urls),
-            source_priority[candidate.evidence_source_type.value],
+            EVIDENCE_SOURCE_PRIORITY[candidate.evidence_source_type],
         )
 
     # Broad discovery often returns only a location and no reviews. Keep the
@@ -190,8 +204,8 @@ def accumulate_restaurant_candidates(
 def _candidate_cache_filename(candidate: RestaurantCandidateInput) -> str:
     identity = "\0".join(
         (
-            _normalize_identity_text(candidate.name),
-            _normalize_identity_text(candidate.address),
+            normalize_identity_text(candidate.name),
+            normalize_identity_text(candidate.address),
         )
     )
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
@@ -304,9 +318,9 @@ def partition_candidates_by_review_validity(
     for candidate in candidates:
         valid_reviews, issues = _filter_valid_reviews(candidate, as_of)
         if len(valid_reviews) < MIN_RECENT_REVIEW_COUNT:
-            issue_detail = "; ".join(issues[:3]) or "too few review entries"
-            if len(issues) > 3:
-                issue_detail += f"; and {len(issues) - 3} more issue(s)"
+            issue_detail = (
+                summarize_issue_list(issues, "issue(s)") or "too few review entries"
+            )
             rejections.append(
                 f"Evaluation excluded: {candidate.name} has only {len(valid_reviews)} "
                 "valid recent reviews after filtering; at least "
@@ -326,9 +340,7 @@ def partition_candidates_by_review_validity(
             candidate = sanitize_candidate_claims(candidate, scraped_pages)
             reference_issues = validate_candidate_references(candidate, scraped_pages)
             if reference_issues:
-                issue_detail = "; ".join(reference_issues[:3])
-                if len(reference_issues) > 3:
-                    issue_detail += f"; and {len(reference_issues) - 3} more issue(s)"
+                issue_detail = summarize_issue_list(reference_issues, "issue(s)")
                 rejections.append(
                     f"Evaluation excluded: {candidate.name} has unverified references: "
                     f"{issue_detail}."
@@ -347,11 +359,7 @@ def cache_restaurant_candidates(
     discovered_candidates = [
         candidate
         for candidate in deduplicate_restaurant_candidates(candidates)
-        if apply_range_rule(
-            candidate,
-            context.hotel,
-            context.max_distance_km,
-        ).within_range
+        if candidate_within_range(context, candidate)
     ]
     if not discovered_candidates:
         return 0
@@ -448,7 +456,7 @@ def load_cached_restaurant_candidates(
     in_range = [
         candidate
         for candidate in cached_candidates
-        if apply_range_rule(candidate, context.hotel, context.max_distance_km).within_range
+        if candidate_within_range(context, candidate)
     ]
     return in_range, rejections
 

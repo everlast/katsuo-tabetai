@@ -24,7 +24,11 @@ from pydantic import BaseModel, Field
 
 from .config import DEFAULT_MODEL
 from .context import KatsuoContext
-from .models import ResearchBatch, RestaurantCandidateInput
+from .models import (
+    EVIDENCE_SOURCE_PRIORITY,
+    ResearchBatch,
+    RestaurantCandidateInput,
+)
 from .tools import (
     MIN_IN_RANGE_CANDIDATES,
     MIN_RECENT_REVIEW_COUNT,
@@ -33,15 +37,18 @@ from .tools import (
     CandidatePoolSummary,
     accumulate_restaurant_candidates,
     cache_restaurant_candidates,
+    candidate_within_range,
     deduplicate_restaurant_candidates,
     evaluate_and_render_top_five,
     insufficient_candidate_pool_message,
     load_cached_restaurant_candidates,
     merge_restaurant_candidates,
+    normalize_identity_text,
     partition_candidates_by_review_validity,
     persist_discovered_restaurants,
     save_restaurant_candidates,
     summarize_candidate_pool,
+    summarize_issue_list,
 )
 from .scraping import scrape_reference_page
 
@@ -228,9 +235,7 @@ def _model_override(model: str) -> dict[str, str]:
 
 
 def _format_rejection_detail(rejections: list[str]) -> str:
-    rejection_summary = "; ".join(rejections[:3])
-    if len(rejections) > 3:
-        rejection_summary += f"; and {len(rejections) - 3} more rejection(s)"
+    rejection_summary = summarize_issue_list(rejections, "rejection(s)")
     return f" Rejections: {rejection_summary}" if rejection_summary else ""
 
 
@@ -274,8 +279,8 @@ def _enrichment_target_key(
     candidate: RestaurantCandidateInput,
 ) -> tuple[str, str]:
     return (
-        "".join(candidate.name.casefold().split()),
-        "".join(candidate.address.casefold().split()),
+        normalize_identity_text(candidate.name),
+        normalize_identity_text(candidate.address),
     )
 
 
@@ -288,13 +293,6 @@ def _select_enrichment_targets(
     eligible_keys = {
         _enrichment_target_key(candidate) for candidate in context.pending_candidates
     }
-    source_priority = {
-        "review_site": 0,
-        "reservation_site": 1,
-        "official_tourism": 2,
-        "official_restaurant": 3,
-    }
-
     def priority(
         candidate: RestaurantCandidateInput,
     ) -> tuple[int, int, int, int, str]:
@@ -318,7 +316,7 @@ def _select_enrichment_targets(
         return (
             len(recent_reviews),
             len(candidate.source_urls),
-            source_priority[candidate.evidence_source_type.value],
+            EVIDENCE_SOURCE_PRIORITY[candidate.evidence_source_type],
             feature_count,
             candidate.name,
         )
@@ -594,7 +592,7 @@ async def run_web_research_phase(
         for candidate in deduplicate_restaurant_candidates(
             list(research_batch.candidates)
         )
-        if summarize_candidate_pool(context, [candidate]).within_range == 1
+        if candidate_within_range(context, candidate)
     ]
     context.collected_candidates = accumulate_restaurant_candidates(
         context.collected_candidates,

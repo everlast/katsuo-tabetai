@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from pydantic import BaseModel, Field, HttpUrl, WithJsonSchema, field_validator
 
@@ -57,6 +57,16 @@ class EvidenceSourceType(StrEnum):
     OFFICIAL_TOURISM = "official_tourism"
     RESERVATION_SITE = "reservation_site"
     REVIEW_SITE = "review_site"
+
+
+# Ascending trust order shared by observation-quality comparison and
+# enrichment target ranking.
+EVIDENCE_SOURCE_PRIORITY: Final[dict[EvidenceSourceType, int]] = {
+    EvidenceSourceType.REVIEW_SITE: 0,
+    EvidenceSourceType.RESERVATION_SITE: 1,
+    EvidenceSourceType.OFFICIAL_TOURISM: 2,
+    EvidenceSourceType.OFFICIAL_RESTAURANT: 3,
+}
 
 
 class HotelLocation(BaseModel):

@@ -11,6 +11,13 @@ from pathlib import Path
 
 from agents import AgentBase, RunContextWrapper, function_tool
 
+from .config import (
+    DUPLICATE_LOCATION_THRESHOLD_KM,
+    MIN_IN_RANGE_CANDIDATES,
+    MIN_RECENT_REVIEW_COUNT,
+    MIN_REVIEW_SOURCE_SITES,
+    RECENT_REVIEW_MAX_AGE_DAYS,
+)
 from .context import KatsuoContext
 from .evidence import (
     sanitize_candidate_claims,
@@ -28,15 +35,9 @@ from .models import (
     TopFiveStore,
     selected_feature_labels,
 )
-from .report import render_top_five_html
+from .report import render_context_markdown, render_top_five_html
 from .scoring import apply_range_rule, haversine_km, normalized_url_host, rank_top_five
 from .scraping import canonical_url
-
-RECENT_REVIEW_MAX_AGE_DAYS = 365
-MIN_RECENT_REVIEW_COUNT = 5
-MIN_REVIEW_SOURCE_SITES = 2
-MIN_IN_RANGE_CANDIDATES = 5
-DUPLICATE_LOCATION_THRESHOLD_KM = 0.05
 
 
 @dataclass(frozen=True)
@@ -518,6 +519,37 @@ def persist_discovered_restaurants(
     }
 
 
+def persist_run_manifest(
+    context: KatsuoContext,
+    trace_id: str,
+    audit: dict[str, object],
+) -> None:
+    """Write the run manifest with the model, trace, audit, and artifact paths."""
+    write_json_artifact(
+        context.run_manifest_path,
+        {
+            "schema_version": 1,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "model": context.model,
+            "trace_id": trace_id,
+            "trace_dashboard": "https://platform.openai.com/traces",
+            "audit": audit,
+            "artifacts": {
+                "discovered_restaurants": str(context.discovered_candidates_path),
+                "context_markdown": str(context.context_markdown_path),
+                "scrape_manifest": str(context.scrape_manifest_path),
+                "candidates_json": str(context.candidates_path),
+                "top_five_json": str(context.top_five_path),
+                "html": str(context.html_path),
+            },
+            "collection": {
+                "collected": len(context.collected_candidates),
+                "evaluation_eligible": len(context.pending_candidates),
+            },
+        },
+    )
+
+
 def _collect_candidate_pages(
     candidates: list[RestaurantCandidateInput],
     pages: Mapping[str, ScrapedPage],
@@ -664,54 +696,3 @@ def evaluate_and_render_top_five(
     result = create_top_five_report(context)
     context.evaluation_tool_calls += 1
     return json.dumps(result, ensure_ascii=False)
-
-
-def render_context_markdown(store: CandidateStore) -> str:
-    lines = [
-        "# Katsuo Restaurant Context",
-        "",
-        f"- Generated at: `{store.generated_at.isoformat()}`",
-        f"- Model: `{store.model}`",
-        f"- Trace ID: `{store.trace_id}`",
-        f"- Hotel: {store.hotel.name}",
-        f"- Maximum straight-line distance: {store.max_distance_km:.2f} km",
-        "",
-        "## Verified Restaurant Candidates",
-        "",
-    ]
-    for index, candidate in enumerate(store.candidates, start=1):
-        feature_labels = [
-            "katsuo dish",
-            *selected_feature_labels(
-                candidate,
-                warayaki="warayaki",
-                shio_tataki="shio tataki",
-                seasonal_katsuo="seasonal katsuo",
-            ),
-        ]
-        lines.extend(
-            [
-                f"{index}. **{candidate.name}**",
-                f"   - Address: {candidate.address}",
-                f"   - Coordinates: {candidate.latitude}, {candidate.longitude}",
-                f"   - Distance: {candidate.distance_km:.2f} km",
-                f"   - Katsuo dish: {candidate.katsuo_dish}",
-                f"   - Verified features: {', '.join(feature_labels)}",
-                f"   - Evidence: [{candidate.evidence_url}]({candidate.evidence_url})",
-                "   - Additional verified sources:",
-                *(
-                    f"     - [{source_url}]({source_url})"
-                    for source_url in candidate.source_urls
-                ),
-                "   - Verified reviews:",
-            ]
-        )
-        for review in candidate.recent_reviews:
-            lines.append(
-                "     - "
-                f"{review.published_at.isoformat()} | {review.rating:g}/5 | "
-                f"{review.reviewer_name} | {review.source_name} | "
-                f"[{review.review_url}]({review.review_url}) | {review.summary}"
-            )
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"

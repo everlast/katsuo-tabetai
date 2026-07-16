@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from collections.abc import Awaitable
 from dataclasses import dataclass
@@ -22,7 +21,13 @@ from agents import (
 from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 from pydantic import BaseModel, Field
 
-from .config import DEFAULT_MODEL
+from .config import (
+    DEFAULT_MODEL,
+    MIN_IN_RANGE_CANDIDATES,
+    MIN_RECENT_REVIEW_COUNT,
+    MIN_REVIEW_SOURCE_SITES,
+    RECENT_REVIEW_MAX_AGE_DAYS,
+)
 from .context import KatsuoContext
 from .models import (
     EVIDENCE_SOURCE_PRIORITY,
@@ -30,10 +35,6 @@ from .models import (
     RestaurantCandidateInput,
 )
 from .tools import (
-    MIN_IN_RANGE_CANDIDATES,
-    MIN_RECENT_REVIEW_COUNT,
-    MIN_REVIEW_SOURCE_SITES,
-    RECENT_REVIEW_MAX_AGE_DAYS,
     CandidatePoolSummary,
     accumulate_restaurant_candidates,
     cache_restaurant_candidates,
@@ -46,6 +47,7 @@ from .tools import (
     normalize_identity_text,
     partition_candidates_by_review_validity,
     persist_discovered_restaurants,
+    persist_run_manifest,
     save_restaurant_candidates,
     summarize_candidate_pool,
     summarize_issue_list,
@@ -826,35 +828,7 @@ async def run_katsuo_workflow(
         )
     audit = audit_run_items(result, context, prior_results=tuple(research_results))
     _emit_progress(context, "実行監査と成果物保存を開始")
-    context.run_manifest_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-                "model": context.model,
-                "trace_id": trace_id,
-                "trace_dashboard": "https://platform.openai.com/traces",
-                "audit": audit.model_dump(),
-                "artifacts": {
-                    "discovered_restaurants": str(
-                        context.discovered_candidates_path
-                    ),
-                    "context_markdown": str(context.context_markdown_path),
-                    "scrape_manifest": str(context.scrape_manifest_path),
-                    "candidates_json": str(context.candidates_path),
-                    "top_five_json": str(context.top_five_path),
-                    "html": str(context.html_path),
-                },
-                "collection": {
-                    "collected": len(context.collected_candidates),
-                    "evaluation_eligible": len(context.pending_candidates),
-                },
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    persist_run_manifest(context, trace_id, audit.model_dump())
     return WorkflowOutcome(
         final_output=result.final_output,
         last_agent=result.last_agent.name,

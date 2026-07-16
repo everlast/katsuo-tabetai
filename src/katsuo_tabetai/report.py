@@ -3,7 +3,12 @@ from __future__ import annotations
 from html import escape
 from pathlib import Path
 
-from .models import EvidenceSourceType, TopFiveStore, selected_feature_labels
+from .models import (
+    CandidateStore,
+    EvidenceSourceType,
+    TopFiveStore,
+    selected_feature_labels,
+)
 from .scoring import (
     DISTANCE_MAX_POINTS,
     EVIDENCE_POINTS,
@@ -584,3 +589,54 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
 """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(html, encoding="utf-8")
+
+
+def render_context_markdown(store: CandidateStore) -> str:
+    lines = [
+        "# Katsuo Restaurant Context",
+        "",
+        f"- Generated at: `{store.generated_at.isoformat()}`",
+        f"- Model: `{store.model}`",
+        f"- Trace ID: `{store.trace_id}`",
+        f"- Hotel: {store.hotel.name}",
+        f"- Maximum straight-line distance: {store.max_distance_km:.2f} km",
+        "",
+        "## Verified Restaurant Candidates",
+        "",
+    ]
+    for index, candidate in enumerate(store.candidates, start=1):
+        feature_labels = [
+            "katsuo dish",
+            *selected_feature_labels(
+                candidate,
+                warayaki="warayaki",
+                shio_tataki="shio tataki",
+                seasonal_katsuo="seasonal katsuo",
+            ),
+        ]
+        lines.extend(
+            [
+                f"{index}. **{candidate.name}**",
+                f"   - Address: {candidate.address}",
+                f"   - Coordinates: {candidate.latitude}, {candidate.longitude}",
+                f"   - Distance: {candidate.distance_km:.2f} km",
+                f"   - Katsuo dish: {candidate.katsuo_dish}",
+                f"   - Verified features: {', '.join(feature_labels)}",
+                f"   - Evidence: [{candidate.evidence_url}]({candidate.evidence_url})",
+                "   - Additional verified sources:",
+                *(
+                    f"     - [{source_url}]({source_url})"
+                    for source_url in candidate.source_urls
+                ),
+                "   - Verified reviews:",
+            ]
+        )
+        for review in candidate.recent_reviews:
+            lines.append(
+                "     - "
+                f"{review.published_at.isoformat()} | {review.rating:g}/5 | "
+                f"{review.reviewer_name} | {review.source_name} | "
+                f"[{review.review_url}]({review.review_url}) | {review.summary}"
+            )
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"

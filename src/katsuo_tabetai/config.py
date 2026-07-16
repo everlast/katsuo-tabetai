@@ -2,6 +2,7 @@ from typing import Final
 
 
 DEFAULT_MODEL: Final = "gpt-5.6-luna"
+DEFAULT_API_MAX_RETRIES: Final = 5
 
 # Quality acceptance criteria for collected research.
 RECENT_REVIEW_MAX_AGE_DAYS: Final = 365

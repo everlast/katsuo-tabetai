@@ -9,9 +9,10 @@ from pathlib import Path
 
 from agents import AgentsException, set_default_openai_client
 from dotenv import find_dotenv, load_dotenv
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAIError
 
 from .config import (
+    DEFAULT_API_MAX_RETRIES,
     DEFAULT_DISCOVERY_ATTEMPTS,
     DEFAULT_MODEL,
     DEFAULT_REVIEW_ENRICHMENT_ATTEMPTS,
@@ -62,8 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--api-max-retries",
         type=int,
-        default=0,
-        help="Automatic OpenAI API retries after a failed request. Defaults to 0.",
+        default=DEFAULT_API_MAX_RETRIES,
+        help=(
+            "Automatic OpenAI API retries for transient failures. "
+            f"Defaults to {DEFAULT_API_MAX_RETRIES}."
+        ),
     )
     parser.add_argument(
         "--workflow-timeout-seconds",
@@ -190,6 +194,7 @@ def main() -> None:
         InsufficientResearchCandidatesError,
         InvalidResearchOutputError,
         NoValidResearchCandidatesError,
+        OpenAIError,
     ) as exc:
         raise SystemExit(f"Katsuo workflow failed: {exc}") from None
     raise SystemExit(exit_code)

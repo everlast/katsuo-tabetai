@@ -30,6 +30,7 @@ from .candidates import (
     merge_restaurant_candidates,
     normalize_identity_text,
     partition_candidates_by_review_validity,
+    prepare_candidate_for_evaluation,
     summarize_candidate_pool,
     summarize_issue_list,
 )
@@ -291,10 +292,13 @@ def _build_discovery_prompt(
 
 RESEARCH MODE: DISCOVERY
 範囲内でカツオ料理を提供する店舗を網羅的に発見する回です。
-現在 {collected_summary.within_range} 店を収集済みです。未収集店舗をすべて探し、
-新規候補を優先して返してください。新規候補が5店未満なら、出力スキーマを満たすため
-収集済み候補も再提出してください。口コミが5件揃わない店舗も省略せず、空配列のまま
-返してください。この回では各店の口コミ件数より、店舗発見の網羅性を優先します。
+現在 {collected_summary.within_range} 店を収集済みです。食べログ、ホットペッパーグルメ、
+Google Maps、Yahoo!マップ、Rettyなどの口コミサイトにある個別店舗ページを起点に、
+新規候補と実在する個別口コミを探してください。口コミ取得の見込みがある未収集店舗を
+優先し、その後に店舗公式・観光公式ページで店名、住所、カツオ料理、料理特徴を補完して
+ください。公式ページだけで見つけた店より、検証可能な口コミを持つ店を優先します。
+新規候補が5店未満なら、出力スキーマを満たすため収集済み候補も再提出してください。
+口コミが5件揃わない店舗も省略せず、確認できた分または空配列で返してください。
 
 Collected candidates:
 {_format_candidate_detail(collected_summary)}
@@ -347,14 +351,22 @@ def _select_enrichment_targets(
             candidate.name,
         )
 
+    prepared_candidates = [
+        prepare_candidate_for_evaluation(
+            candidate,
+            as_of,
+            context.scraped_pages,
+        )[0]
+        for candidate in context.collected_candidates
+    ]
     ineligible = [
         candidate
-        for candidate in context.collected_candidates
+        for candidate in prepared_candidates
         if _enrichment_target_key(candidate) not in eligible_keys
     ]
     eligible = [
         candidate
-        for candidate in context.collected_candidates
+        for candidate in prepared_candidates
         if _enrichment_target_key(candidate) in eligible_keys
     ]
     ineligible.sort(key=priority, reverse=True)
@@ -421,7 +433,11 @@ RESEARCH MODE: ENRICHMENT
 この回は下記5店舗だけを調査してください。existing-reviewはすでに保存済みなので、
 同じ口コミを再提出せず、missing_reviewsとmissing_domainsを満たす不足分だけを探して
 recent_reviewsへ入れてください。特にmissing_domainsが1なら、current_domainsにない
-レビューサイトを優先してください。新しい店舗や対象外の店舗は返さないでください。
+口コミサイトを最初に検索してください。食べログ、ホットペッパーグルメ、Google Maps、
+Yahoo!マップ、Rettyなどの個別店舗・個別口コミページを起点にし、店舗公式・観光公式は
+店名、住所、カツオ料理、料理特徴の補完に使ってください。新しい店舗や対象外の店舗は
+返さないでください。existing-reviewには検証済み口コミだけを載せているため、キャッシュ
+から除外された無効口コミは再利用せず、missing_reviews分の別口コミを探してください。
 各口コミページを必ずscrape_reference_pageで取得し、投稿者名、公開日または訪問月、
 5点評価を本文上で照合してください。見つからない口コミを推測して補わず、対象店舗
 自体はrecent_reviewsを空配列にしてでも必ず返してください。既存分と新規分はコードで
@@ -524,13 +540,19 @@ You research restaurants serving excellent katsuo near the configured hotel in K
 Required workflow:
 1. Read RESEARCH MODE from the user input. DISCOVERY finds restaurants broadly;
    ENRICHMENT researches only the five explicitly listed targets. Never mix modes.
-2. Use WebSearchTool to find current restaurant, official, tourism, reservation,
-   review, and map pages. Use more searches if evidence is weak.
+2. Use WebSearchTool to start from current individual restaurant and review pages
+   on review platforms such as Tabelog, Hot Pepper Gourmet, Google Maps, Yahoo!
+   Maps, and Retty. Use these pages to identify candidates with verifiable review
+   coverage. Then use official restaurant and official tourism pages to complement
+   the candidate's name, address, katsuo dish, and dish features. Review platforms
+   drive candidate discovery; official sources strengthen dish evidence and never
+   count as reviews. Use more searches if evidence is weak.
 3. In DISCOVERY mode, discover every distinct restaurant serving katsuo inside the
    configured hotel radius. Aim for at least 15 candidates and return up to 30;
-   prioritize discovery breadth over review depth. In ENRICHMENT mode, return only
-   the five listed targets and focus on obtaining exactly five verifiable reviews
-   per target from at least two domains. In both modes, check coordinates against
+   prioritize candidates with verifiable review coverage instead of collecting
+   official-page-only candidates. In ENRICHMENT mode, return only the five listed
+   targets and focus on obtaining exactly five verifiable reviews per target from
+   at least two domains. In both modes, check coordinates against
    a map or official location page and never invent a URL, dish, address, coordinate,
    or review. Do not omit a target merely because its reviews are incomplete.
 4. Call scrape_reference_page for every evidence_url and for each source_urls or
@@ -729,8 +751,25 @@ async def _run_research_attempts(
 ) -> list[Any]:
     """Run discovery/enrichment research until the evaluation pool is ready."""
     research_results: list[Any] = []
-    current_prompt = _build_discovery_prompt(base_prompt, context)
-    research_mode = "店舗発見"
+    summary = summarize_candidate_pool(context, context.pending_candidates)
+    collected_summary = summarize_candidate_pool(
+        context,
+        context.collected_candidates,
+    )
+    if (
+        not summary.is_ready
+        and collected_summary.within_range >= MIN_IN_RANGE_CANDIDATES
+    ):
+        current_prompt = _build_enrichment_prompt(
+            base_prompt,
+            context,
+            summary,
+            as_of,
+        )
+        research_mode = "口コミ補完"
+    else:
+        current_prompt = _build_discovery_prompt(base_prompt, context)
+        research_mode = "店舗発見"
     for attempt in range(1, research_attempts + 1):
         try:
             research_result = await run_web_research_phase(

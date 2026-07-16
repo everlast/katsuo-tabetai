@@ -10,6 +10,7 @@ from katsuo_tabetai.models import (
     RestaurantCandidateInput,
     TopFiveStore,
 )
+from katsuo_tabetai.scraping import canonical_url
 from katsuo_tabetai.tools import (
     MIN_REVIEW_SOURCE_SITES,
     RECENT_REVIEW_MAX_AGE_DAYS,
@@ -218,6 +219,57 @@ def test_research_partition_keeps_candidate_with_five_reviews_after_filtering() 
     assert len(accepted) == 1
     assert len(accepted[0].recent_reviews) == 5
     assert stale_review not in accepted[0].recent_reviews
+
+
+def test_research_partition_drops_only_review_with_unverified_reference(tmp_path) -> None:
+    candidate = candidate_input(1)
+    extra_review = candidate.recent_reviews[-1].model_copy(
+        update={
+            "review_url": type(candidate.recent_reviews[-1].review_url)(
+                "https://extra-reviews.example/restaurant/1/review/6"
+            ),
+            "reviewer_name": "Unverified reviewer",
+            "published_at": date.today() - timedelta(days=10),
+            "summary": "An additional review with an invalid source page",
+        }
+    )
+    candidate = candidate.model_copy(
+        update={"recent_reviews": [*candidate.recent_reviews, extra_review]}
+    )
+    context = KatsuoContext(
+        hotel=HOTEL,
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    populate_scraped_pages(context, [candidate])
+    review_key = canonical_url(extra_review.review_url)
+    review_page = context.scraped_pages[review_key]
+    context.scraped_pages[review_key] = review_page.model_copy(
+        update={
+            "title": "Another restaurant",
+            "content": "\n".join(
+                [
+                    "Another restaurant",
+                    "Kochi 999",
+                    extra_review.reviewer_name,
+                    extra_review.published_at.isoformat(),
+                    f"{extra_review.rating:g} / 5",
+                    "A review of a different venue",
+                ]
+            ),
+        }
+    )
+
+    accepted, rejections = partition_candidates_by_review_validity(
+        [candidate],
+        date.today(),
+        context.scraped_pages,
+    )
+
+    assert rejections == []
+    assert len(accepted) == 1
+    assert len(accepted[0].recent_reviews) == 5
+    assert extra_review not in accepted[0].recent_reviews
 
 
 def test_restaurant_cache_writes_and_reloads_one_file_per_store(tmp_path) -> None:

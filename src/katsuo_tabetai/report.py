@@ -3,7 +3,12 @@ from __future__ import annotations
 from html import escape
 from pathlib import Path
 
-from .models import EvidenceSourceType, TopFiveStore
+from .models import (
+    CandidateStore,
+    EvidenceSourceType,
+    TopFiveStore,
+    selected_feature_labels,
+)
 from .scoring import (
     DISTANCE_MAX_POINTS,
     EVIDENCE_POINTS,
@@ -145,13 +150,15 @@ def _restaurant_row(restaurant) -> str:
         )
         for index, source_url in enumerate(restaurant.source_urls, start=1)
     )
-    features = ["カツオ料理の掲載あり"]
-    if restaurant.has_warayaki:
-        features.append("藁焼き")
-    if restaurant.has_shio_tataki:
-        features.append("塩たたき")
-    if restaurant.has_seasonal_katsuo:
-        features.append("旬の案内")
+    features = [
+        "カツオ料理の掲載あり",
+        *selected_feature_labels(
+            restaurant,
+            warayaki="藁焼き",
+            shio_tataki="塩たたき",
+            seasonal_katsuo="旬の案内",
+        ),
+    ]
     feature_html = "".join(f"<li>{escape(item)}</li>" for item in features)
     review_html = "".join(_review_row(review) for review in restaurant.recent_reviews)
     score_breakdown_html = _score_breakdown(restaurant)
@@ -210,6 +217,317 @@ def _restaurant_row(restaurant) -> str:
       </article>"""
 
 
+_STYLE_CSS = """\
+    :root {
+      --paper: #f7f8f5;
+      --white: #ffffff;
+      --ink: #17211f;
+      --muted: #62706c;
+      --line: #d5dcd8;
+      --ocean: #087f78;
+      --bonito: #c94432;
+      --rank: #004AAD;
+      --market: #f1bf3a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
+      letter-spacing: 0;
+    }
+    a { color: inherit; }
+    .masthead {
+      border-top: 8px solid var(--bonito);
+      border-bottom: 1px solid var(--line);
+      background: var(--white);
+    }
+    .masthead-inner, main, footer { width: min(1080px, calc(100% - 40px)); margin: 0 auto; }
+    .masthead-inner { padding: 34px 0 28px; display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: end; }
+    .eyebrow, .source-type {
+      margin: 0 0 8px;
+      color: var(--ocean);
+      font: 700 12px/1.4 "SFMono-Regular", Menlo, monospace;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
+      font-size: clamp(32px, 6vw, 64px);
+      line-height: 1.05;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    .stamp {
+      min-width: 144px;
+      padding: 14px 16px;
+      border: 2px solid var(--ink);
+      box-shadow: 5px 5px 0 var(--market);
+      font: 700 13px/1.6 "SFMono-Regular", Menlo, monospace;
+    }
+    .stamp strong { display: block; font-size: 20px; }
+    .criteria {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      border-bottom: 1px solid var(--line);
+      background: var(--ink);
+      color: var(--white);
+    }
+    .criteria div { padding: 16px 20px; border-right: 1px solid #40504c; }
+    .criteria div:last-child { border-right: 0; }
+    .criteria span { display: block; color: #b9c5c1; font-size: 11px; }
+    .criteria strong { display: block; margin-top: 3px; font-size: 14px; }
+    main { padding: 32px 0 56px; }
+    .ranking-index {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      margin-bottom: 24px;
+      border: 1px solid var(--ink);
+      background: var(--white);
+    }
+    .ranking-index-heading {
+      display: grid;
+      align-content: center;
+      padding: 16px 18px;
+      border-right: 1px solid var(--ink);
+    }
+    .ranking-index-label {
+      margin: 0 0 4px;
+      color: var(--bonito);
+      font: 700 11px/1.4 "SFMono-Regular", Menlo, monospace;
+    }
+    .ranking-index h2 { margin: 0; font-size: 16px; line-height: 1.4; }
+    .ranking-index ol {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .ranking-index li { min-width: 0; border-right: 1px solid var(--line); }
+    .ranking-index li:last-child { border-right: 0; }
+    .ranking-index a {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 6px;
+      min-height: 94px;
+      padding: 12px;
+      text-decoration: none;
+    }
+    .ranking-index a:hover { background: #f3f6f4; }
+    .ranking-index a:focus-visible { outline: 3px solid var(--market); outline-offset: -3px; }
+    .ranking-index-rank { color: var(--ocean); font: 700 10px/1.3 "SFMono-Regular", Menlo, monospace; }
+    .ranking-index strong { min-width: 0; overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; }
+    .ranking-index-score { color: var(--muted); font: 700 11px/1.3 "SFMono-Regular", Menlo, monospace; }
+    .restaurant {
+      display: grid;
+      grid-template-columns: 104px 1fr;
+      margin-bottom: 16px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: var(--white);
+    }
+    .rank {
+      display: grid;
+      place-content: center;
+      min-height: 260px;
+      background: var(--rank);
+      color: var(--white);
+      text-align: center;
+    }
+    .rank span { font: 700 11px/1 "SFMono-Regular", Menlo, monospace; }
+    .rank strong { font: 700 58px/1 "Hiragino Mincho ProN", "Yu Mincho", serif; }
+    .restaurant-main { padding: 24px 28px 26px; min-width: 0; }
+    .restaurant-heading { display: flex; justify-content: space-between; gap: 24px; align-items: start; }
+    .restaurant h2 { margin: 0; font-size: 24px; line-height: 1.35; letter-spacing: 0; }
+    .score { display: flex; align-items: baseline; white-space: nowrap; color: var(--ocean); }
+    .score strong { font: 700 30px/1 "SFMono-Regular", Menlo, monospace; }
+    .score span { margin-left: 4px; color: var(--muted); font-size: 12px; }
+    .score-track { height: 4px; margin: 16px 0 20px; background: #e5e9e7; }
+    .score-track span { display: block; height: 100%; background: var(--ocean); }
+    .score-breakdown {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px 12px;
+      margin: 0 0 22px;
+    }
+    .score-breakdown-row {
+      min-width: 0;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+    }
+    .score-breakdown dt {
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.45;
+    }
+    .score-breakdown dd { margin: 5px 0 0; }
+    .score-breakdown-value {
+      display: block;
+      font: 700 12px/1.2 "SFMono-Regular", Menlo, monospace;
+    }
+    .score-breakdown-detail {
+      display: block;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 9px;
+      line-height: 1.45;
+    }
+    .mini-track {
+      display: block;
+      height: 3px;
+      margin-top: 7px;
+      background: #e5e9e7;
+    }
+    .mini-track span { display: block; height: 100%; background: var(--ocean); }
+    .recommendation { margin: 0 0 20px; padding: 14px 16px; border-left: 4px solid var(--bonito); background: #fff6f3; }
+    .recommendation h3 { margin: 0 0 6px; font-size: 13px; }
+    .recommendation p { margin: 0; font-size: 14px; line-height: 1.8; }
+    .dish { margin: 0 0 7px; font-weight: 700; font-size: 17px; }
+    .address { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; }
+    .features { display: flex; flex-wrap: wrap; gap: 7px; margin: 17px 0 19px; padding: 0; list-style: none; }
+    .features li { padding: 5px 8px; border-left: 3px solid var(--market); background: #f5f5ef; font-size: 12px; }
+    .evidence {
+      display: inline-block;
+      padding-bottom: 3px;
+      border-bottom: 2px solid var(--bonito);
+      font-weight: 700;
+      font-size: 13px;
+      text-decoration: none;
+    }
+    .evidence:hover { color: var(--bonito); }
+    .evidence:focus-visible { outline: 3px solid var(--market); outline-offset: 4px; }
+    .source-links { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0 0; padding: 0; list-style: none; }
+    .source-links a { color: var(--muted); font-size: 12px; }
+    .review-section { margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--line); }
+    .review-heading { display: flex; justify-content: space-between; gap: 24px; align-items: end; }
+    .review-label { margin: 0 0 5px; color: var(--bonito); font: 700 11px/1.4 "SFMono-Regular", Menlo, monospace; }
+    .review-heading h3 { margin: 0; font-size: 18px; }
+    .review-stats { display: flex; gap: 18px; margin: 0; }
+    .review-stats div { min-width: 76px; }
+    .review-stats dt { color: var(--muted); font-size: 10px; }
+    .review-stats dd { margin: 3px 0 0; font: 700 14px/1.3 "SFMono-Regular", Menlo, monospace; }
+    .review-score { margin: 12px 0 0; color: var(--muted); font-size: 11px; }
+    .review-score-breakdown {
+      grid-template-columns: repeat(3, minmax(0, 160px));
+      margin-top: 12px;
+      margin-bottom: 0;
+    }
+    .reviews { margin: 18px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+    .review-item { padding: 16px 0; border-bottom: 1px solid var(--line); }
+    .review-meta { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+    .review-meta strong { color: var(--ocean); font: 700 14px/1.4 "SFMono-Regular", Menlo, monospace; }
+    .review-meta span { color: var(--muted); font-size: 11px; text-align: right; }
+    .review-item > p { margin: 8px 0; font-size: 13px; line-height: 1.75; }
+    .review-points { display: flex; flex-wrap: wrap; gap: 6px; }
+    .positive-point { padding: 3px 7px; background: #e9f4f1; color: #155f59; font-size: 11px; }
+    .review-item .review-caution { margin: 8px 0; color: #854237; font-size: 11px; }
+    .review-item a { display: inline-block; margin-top: 9px; color: var(--ocean); font-size: 11px; font-weight: 700; }
+    .score-note {
+      margin-top: 32px;
+      padding: 18px 20px;
+      border-left: 4px solid var(--ocean);
+      background: #edf4f1;
+    }
+    .score-note-label {
+      margin: 0 0 4px;
+      color: var(--ocean);
+      font: 700 11px/1.4 "SFMono-Regular", Menlo, monospace;
+    }
+    .score-note h2 { margin: 0 0 8px; font-size: 17px; line-height: 1.5; }
+    .score-note p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.8; }
+    .score-note strong { color: var(--ink); }
+    .score-note-items {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      margin: 14px 0;
+      border-top: 1px solid #c9d7d2;
+      border-bottom: 1px solid #c9d7d2;
+    }
+    .score-note-items > div { min-width: 0; padding: 12px; border-right: 1px solid #c9d7d2; }
+    .score-note-items > div:first-child { padding-left: 0; }
+    .score-note-items > div:last-child { padding-right: 0; border-right: 0; }
+    .score-note-items dt { font-size: 12px; line-height: 1.5; }
+    .score-note-items dt strong { display: block; }
+    .score-note-items dt span { display: block; margin-top: 2px; color: var(--ocean); font-size: 10px; font-weight: 700; }
+    .score-note-items dd { margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
+    footer { padding: 22px 0 36px; color: var(--muted); font-size: 12px; line-height: 1.8; }
+    @media (max-width: 700px) {
+      .masthead-inner { grid-template-columns: 1fr; }
+      .stamp { width: max-content; max-width: 100%; }
+      .criteria { grid-template-columns: 1fr; }
+      .criteria div { border-right: 0; border-bottom: 1px solid #40504c; }
+      .ranking-index { grid-template-columns: 1fr; }
+      .ranking-index-heading { border-right: 0; border-bottom: 1px solid var(--ink); }
+      .ranking-index ol { grid-template-columns: 1fr; }
+      .ranking-index li { border-right: 0; border-bottom: 1px solid var(--line); }
+      .ranking-index li:last-child { border-bottom: 0; }
+      .ranking-index a {
+        grid-template-columns: 56px minmax(0, 1fr) auto;
+        grid-template-rows: 1fr;
+        align-items: center;
+        min-height: 52px;
+      }
+      .score-note-items { grid-template-columns: 1fr; }
+      .score-note-items > div,
+      .score-note-items > div:first-child,
+      .score-note-items > div:last-child {
+        padding: 11px 0;
+        border-right: 0;
+        border-bottom: 1px solid #c9d7d2;
+      }
+      .score-note-items > div:last-child { border-bottom: 0; }
+      .restaurant { grid-template-columns: 64px 1fr; }
+      .rank { min-height: 100%; }
+      .rank strong { font-size: 42px; }
+      .restaurant-main { padding: 20px 18px 22px; }
+      .restaurant-heading { display: block; }
+      .score { margin-top: 14px; }
+      .score-breakdown { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .review-score-breakdown { grid-template-columns: 1fr; }
+      .restaurant h2 { font-size: 20px; }
+      .review-heading { display: block; }
+      .review-stats { margin-top: 14px; gap: 12px; flex-wrap: wrap; }
+      .review-meta { display: block; }
+      .review-meta span { display: block; margin-top: 4px; text-align: left; }
+    }
+    @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }"""
+
+
+def _score_note_html() -> str:
+    return f"""\
+    <aside class="score-note" aria-labelledby="score-note-title">
+      <p class="score-note-label">SCORING NOTE</p>
+      <h2 id="score-note-title">スコアはどう決まる？</h2>
+      <p><strong>{TOTAL_MAX_POINTS:g}点満点</strong>で、保存済みの事実を次の5つの観点から評価しています。</p>
+      <dl class="score-note-items">
+        <div>
+          <dt><strong>カツオ料理の根拠種別</strong><span>最大 {EVIDENCE_MAX_POINTS:g}点</span></dt>
+          <dd>情報元の信頼性を評価。店舗公式 {EVIDENCE_POINTS[EvidenceSourceType.OFFICIAL_RESTAURANT]:g}点、観光公式 {EVIDENCE_POINTS[EvidenceSourceType.OFFICIAL_TOURISM]:g}点、予約サイト {EVIDENCE_POINTS[EvidenceSourceType.RESERVATION_SITE]:g}点、レビューサイト {EVIDENCE_POINTS[EvidenceSourceType.REVIEW_SITE]:g}点です。</dd>
+        </div>
+        <div>
+          <dt><strong>カツオ料理の特徴</strong><span>最大 {KATSUO_FEATURES_MAX_POINTS:g}点</span></dt>
+          <dd>料理名の掲載 {KATSUO_DISH_NAME_POINTS:g}点を基礎に、藁焼き {WARAYAKI_POINTS:g}点、塩たたき {SHIO_TATAKI_POINTS:g}点、旬の案内 {SEASONAL_KATSUO_POINTS:g}点を加算します。</dd>
+        </div>
+        <div>
+          <dt><strong>独立した料理根拠URL</strong><span>最大 {INDEPENDENT_SOURCES_MAX_POINTS:g}点</span></dt>
+          <dd>根拠URLをドメイン単位で重複除外し、1ドメインにつき {INDEPENDENT_SOURCE_POINTS_PER_DOMAIN:g}点、最大 {INDEPENDENT_SOURCE_MAX_DOMAINS}ドメインまで加算します。</dd>
+        </div>
+        <div>
+          <dt><strong>新着レビューの評判</strong><span>最大 {RECENT_REVIEWS_MAX_POINTS:g}点</span></dt>
+          <dd>平均評価 {REVIEW_RATING_MAX_POINTS:g}点、確認件数 {REVIEW_COUNT_MAX_POINTS:g}点、情報源数 {REVIEW_SOURCE_MAX_POINTS:g}点で評価。件数は {REVIEW_COUNT_FOR_MAX_POINTS}件、情報源は {REVIEW_SOURCE_COUNT_FOR_MAX_POINTS}サイトで満点です。</dd>
+        </div>
+        <div>
+          <dt><strong>ホテルからの距離</strong><span>最大 {DISTANCE_MAX_POINTS:g}点</span></dt>
+          <dd>ホテルと同じ位置を {DISTANCE_MAX_POINTS:g}点とし、離れるほど直線的に減点。検索距離の上限で0点になります。</dd>
+        </div>
+      </dl>
+      <p>LLMは採点や順位決定を行わず、同じ入力なら同じ結果になります。</p>
+    </aside>"""
+
+
 def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
     rows = "\n".join(_restaurant_row(item) for item in report.restaurants)
     index_items = "".join(
@@ -231,282 +549,7 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ホテル周辺 カツオ TOP 5</title>
   <style>
-    :root {{
-      --paper: #f7f8f5;
-      --white: #ffffff;
-      --ink: #17211f;
-      --muted: #62706c;
-      --line: #d5dcd8;
-      --ocean: #087f78;
-      --bonito: #c94432;
-      --rank: #004AAD;
-      --market: #f1bf3a;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      background: var(--paper);
-      color: var(--ink);
-      font-family: "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
-      letter-spacing: 0;
-    }}
-    a {{ color: inherit; }}
-    .masthead {{
-      border-top: 8px solid var(--bonito);
-      border-bottom: 1px solid var(--line);
-      background: var(--white);
-    }}
-    .masthead-inner, main, footer {{ width: min(1080px, calc(100% - 40px)); margin: 0 auto; }}
-    .masthead-inner {{ padding: 34px 0 28px; display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: end; }}
-    .eyebrow, .source-type {{
-      margin: 0 0 8px;
-      color: var(--ocean);
-      font: 700 12px/1.4 "SFMono-Regular", Menlo, monospace;
-      text-transform: uppercase;
-    }}
-    h1 {{
-      margin: 0;
-      font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
-      font-size: clamp(32px, 6vw, 64px);
-      line-height: 1.05;
-      font-weight: 700;
-      letter-spacing: 0;
-    }}
-    .stamp {{
-      min-width: 144px;
-      padding: 14px 16px;
-      border: 2px solid var(--ink);
-      box-shadow: 5px 5px 0 var(--market);
-      font: 700 13px/1.6 "SFMono-Regular", Menlo, monospace;
-    }}
-    .stamp strong {{ display: block; font-size: 20px; }}
-    .criteria {{
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      border-bottom: 1px solid var(--line);
-      background: var(--ink);
-      color: var(--white);
-    }}
-    .criteria div {{ padding: 16px 20px; border-right: 1px solid #40504c; }}
-    .criteria div:last-child {{ border-right: 0; }}
-    .criteria span {{ display: block; color: #b9c5c1; font-size: 11px; }}
-    .criteria strong {{ display: block; margin-top: 3px; font-size: 14px; }}
-    main {{ padding: 32px 0 56px; }}
-    .ranking-index {{
-      display: grid;
-      grid-template-columns: 160px 1fr;
-      margin-bottom: 24px;
-      border: 1px solid var(--ink);
-      background: var(--white);
-    }}
-    .ranking-index-heading {{
-      display: grid;
-      align-content: center;
-      padding: 16px 18px;
-      border-right: 1px solid var(--ink);
-    }}
-    .ranking-index-label {{
-      margin: 0 0 4px;
-      color: var(--bonito);
-      font: 700 11px/1.4 "SFMono-Regular", Menlo, monospace;
-    }}
-    .ranking-index h2 {{ margin: 0; font-size: 16px; line-height: 1.4; }}
-    .ranking-index ol {{
-      display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
-      margin: 0;
-      padding: 0;
-      list-style: none;
-    }}
-    .ranking-index li {{ min-width: 0; border-right: 1px solid var(--line); }}
-    .ranking-index li:last-child {{ border-right: 0; }}
-    .ranking-index a {{
-      display: grid;
-      grid-template-rows: auto 1fr auto;
-      gap: 6px;
-      min-height: 94px;
-      padding: 12px;
-      text-decoration: none;
-    }}
-    .ranking-index a:hover {{ background: #f3f6f4; }}
-    .ranking-index a:focus-visible {{ outline: 3px solid var(--market); outline-offset: -3px; }}
-    .ranking-index-rank {{ color: var(--ocean); font: 700 10px/1.3 "SFMono-Regular", Menlo, monospace; }}
-    .ranking-index strong {{ min-width: 0; overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; }}
-    .ranking-index-score {{ color: var(--muted); font: 700 11px/1.3 "SFMono-Regular", Menlo, monospace; }}
-    .restaurant {{
-      display: grid;
-      grid-template-columns: 104px 1fr;
-      margin-bottom: 16px;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      overflow: hidden;
-      background: var(--white);
-    }}
-    .rank {{
-      display: grid;
-      place-content: center;
-      min-height: 260px;
-      background: var(--rank);
-      color: var(--white);
-      text-align: center;
-    }}
-    .rank span {{ font: 700 11px/1 "SFMono-Regular", Menlo, monospace; }}
-    .rank strong {{ font: 700 58px/1 "Hiragino Mincho ProN", "Yu Mincho", serif; }}
-    .restaurant-main {{ padding: 24px 28px 26px; min-width: 0; }}
-    .restaurant-heading {{ display: flex; justify-content: space-between; gap: 24px; align-items: start; }}
-    .restaurant h2 {{ margin: 0; font-size: 24px; line-height: 1.35; letter-spacing: 0; }}
-    .score {{ display: flex; align-items: baseline; white-space: nowrap; color: var(--ocean); }}
-    .score strong {{ font: 700 30px/1 "SFMono-Regular", Menlo, monospace; }}
-    .score span {{ margin-left: 4px; color: var(--muted); font-size: 12px; }}
-    .score-track {{ height: 4px; margin: 16px 0 20px; background: #e5e9e7; }}
-    .score-track span {{ display: block; height: 100%; background: var(--ocean); }}
-    .score-breakdown {{
-      display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
-      gap: 10px 12px;
-      margin: 0 0 22px;
-    }}
-    .score-breakdown-row {{
-      min-width: 0;
-      padding-top: 10px;
-      border-top: 1px solid var(--line);
-    }}
-    .score-breakdown dt {{
-      color: var(--muted);
-      font-size: 10px;
-      line-height: 1.45;
-    }}
-    .score-breakdown dd {{ margin: 5px 0 0; }}
-    .score-breakdown-value {{
-      display: block;
-      font: 700 12px/1.2 "SFMono-Regular", Menlo, monospace;
-    }}
-    .score-breakdown-detail {{
-      display: block;
-      margin-top: 6px;
-      color: var(--muted);
-      font-size: 9px;
-      line-height: 1.45;
-    }}
-    .mini-track {{
-      display: block;
-      height: 3px;
-      margin-top: 7px;
-      background: #e5e9e7;
-    }}
-    .mini-track span {{ display: block; height: 100%; background: var(--ocean); }}
-    .recommendation {{ margin: 0 0 20px; padding: 14px 16px; border-left: 4px solid var(--bonito); background: #fff6f3; }}
-    .recommendation h3 {{ margin: 0 0 6px; font-size: 13px; }}
-    .recommendation p {{ margin: 0; font-size: 14px; line-height: 1.8; }}
-    .dish {{ margin: 0 0 7px; font-weight: 700; font-size: 17px; }}
-    .address {{ margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; }}
-    .features {{ display: flex; flex-wrap: wrap; gap: 7px; margin: 17px 0 19px; padding: 0; list-style: none; }}
-    .features li {{ padding: 5px 8px; border-left: 3px solid var(--market); background: #f5f5ef; font-size: 12px; }}
-    .evidence {{
-      display: inline-block;
-      padding-bottom: 3px;
-      border-bottom: 2px solid var(--bonito);
-      font-weight: 700;
-      font-size: 13px;
-      text-decoration: none;
-    }}
-    .evidence:hover {{ color: var(--bonito); }}
-    .evidence:focus-visible {{ outline: 3px solid var(--market); outline-offset: 4px; }}
-    .source-links {{ display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0 0; padding: 0; list-style: none; }}
-    .source-links a {{ color: var(--muted); font-size: 12px; }}
-    .review-section {{ margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--line); }}
-    .review-heading {{ display: flex; justify-content: space-between; gap: 24px; align-items: end; }}
-    .review-label {{ margin: 0 0 5px; color: var(--bonito); font: 700 11px/1.4 "SFMono-Regular", Menlo, monospace; }}
-    .review-heading h3 {{ margin: 0; font-size: 18px; }}
-    .review-stats {{ display: flex; gap: 18px; margin: 0; }}
-    .review-stats div {{ min-width: 76px; }}
-    .review-stats dt {{ color: var(--muted); font-size: 10px; }}
-    .review-stats dd {{ margin: 3px 0 0; font: 700 14px/1.3 "SFMono-Regular", Menlo, monospace; }}
-    .review-score {{ margin: 12px 0 0; color: var(--muted); font-size: 11px; }}
-    .review-score-breakdown {{
-      grid-template-columns: repeat(3, minmax(0, 160px));
-      margin-top: 12px;
-      margin-bottom: 0;
-    }}
-    .reviews {{ margin: 18px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }}
-    .review-item {{ padding: 16px 0; border-bottom: 1px solid var(--line); }}
-    .review-meta {{ display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }}
-    .review-meta strong {{ color: var(--ocean); font: 700 14px/1.4 "SFMono-Regular", Menlo, monospace; }}
-    .review-meta span {{ color: var(--muted); font-size: 11px; text-align: right; }}
-    .review-item > p {{ margin: 8px 0; font-size: 13px; line-height: 1.75; }}
-    .review-points {{ display: flex; flex-wrap: wrap; gap: 6px; }}
-    .positive-point {{ padding: 3px 7px; background: #e9f4f1; color: #155f59; font-size: 11px; }}
-    .review-item .review-caution {{ margin: 8px 0; color: #854237; font-size: 11px; }}
-    .review-item a {{ display: inline-block; margin-top: 9px; color: var(--ocean); font-size: 11px; font-weight: 700; }}
-    .score-note {{
-      margin-top: 32px;
-      padding: 18px 20px;
-      border-left: 4px solid var(--ocean);
-      background: #edf4f1;
-    }}
-    .score-note-label {{
-      margin: 0 0 4px;
-      color: var(--ocean);
-      font: 700 11px/1.4 "SFMono-Regular", Menlo, monospace;
-    }}
-    .score-note h2 {{ margin: 0 0 8px; font-size: 17px; line-height: 1.5; }}
-    .score-note p {{ margin: 0; color: var(--muted); font-size: 12px; line-height: 1.8; }}
-    .score-note strong {{ color: var(--ink); }}
-    .score-note-items {{
-      display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
-      margin: 14px 0;
-      border-top: 1px solid #c9d7d2;
-      border-bottom: 1px solid #c9d7d2;
-    }}
-    .score-note-items > div {{ min-width: 0; padding: 12px; border-right: 1px solid #c9d7d2; }}
-    .score-note-items > div:first-child {{ padding-left: 0; }}
-    .score-note-items > div:last-child {{ padding-right: 0; border-right: 0; }}
-    .score-note-items dt {{ font-size: 12px; line-height: 1.5; }}
-    .score-note-items dt strong {{ display: block; }}
-    .score-note-items dt span {{ display: block; margin-top: 2px; color: var(--ocean); font-size: 10px; font-weight: 700; }}
-    .score-note-items dd {{ margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.7; }}
-    footer {{ padding: 22px 0 36px; color: var(--muted); font-size: 12px; line-height: 1.8; }}
-    @media (max-width: 700px) {{
-      .masthead-inner {{ grid-template-columns: 1fr; }}
-      .stamp {{ width: max-content; max-width: 100%; }}
-      .criteria {{ grid-template-columns: 1fr; }}
-      .criteria div {{ border-right: 0; border-bottom: 1px solid #40504c; }}
-      .ranking-index {{ grid-template-columns: 1fr; }}
-      .ranking-index-heading {{ border-right: 0; border-bottom: 1px solid var(--ink); }}
-      .ranking-index ol {{ grid-template-columns: 1fr; }}
-      .ranking-index li {{ border-right: 0; border-bottom: 1px solid var(--line); }}
-      .ranking-index li:last-child {{ border-bottom: 0; }}
-      .ranking-index a {{
-        grid-template-columns: 56px minmax(0, 1fr) auto;
-        grid-template-rows: 1fr;
-        align-items: center;
-        min-height: 52px;
-      }}
-      .score-note-items {{ grid-template-columns: 1fr; }}
-      .score-note-items > div,
-      .score-note-items > div:first-child,
-      .score-note-items > div:last-child {{
-        padding: 11px 0;
-        border-right: 0;
-        border-bottom: 1px solid #c9d7d2;
-      }}
-      .score-note-items > div:last-child {{ border-bottom: 0; }}
-      .restaurant {{ grid-template-columns: 64px 1fr; }}
-      .rank {{ min-height: 100%; }}
-      .rank strong {{ font-size: 42px; }}
-      .restaurant-main {{ padding: 20px 18px 22px; }}
-      .restaurant-heading {{ display: block; }}
-      .score {{ margin-top: 14px; }}
-      .score-breakdown {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-      .review-score-breakdown {{ grid-template-columns: 1fr; }}
-      .restaurant h2 {{ font-size: 20px; }}
-      .review-heading {{ display: block; }}
-      .review-stats {{ margin-top: 14px; gap: 12px; flex-wrap: wrap; }}
-      .review-meta {{ display: block; }}
-      .review-meta span {{ display: block; margin-top: 4px; text-align: left; }}
-    }}
-    @media (prefers-reduced-motion: reduce) {{ * {{ scroll-behavior: auto; }} }}
+{_STYLE_CSS}
   </style>
 </head>
 <body>
@@ -535,34 +578,7 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
       </ol>
     </nav>
     {rows}
-    <aside class="score-note" aria-labelledby="score-note-title">
-      <p class="score-note-label">SCORING NOTE</p>
-      <h2 id="score-note-title">スコアはどう決まる？</h2>
-      <p><strong>{TOTAL_MAX_POINTS:g}点満点</strong>で、保存済みの事実を次の5つの観点から評価しています。</p>
-      <dl class="score-note-items">
-        <div>
-          <dt><strong>カツオ料理の根拠種別</strong><span>最大 {EVIDENCE_MAX_POINTS:g}点</span></dt>
-          <dd>情報元の信頼性を評価。店舗公式 {EVIDENCE_POINTS[EvidenceSourceType.OFFICIAL_RESTAURANT]:g}点、観光公式 {EVIDENCE_POINTS[EvidenceSourceType.OFFICIAL_TOURISM]:g}点、予約サイト {EVIDENCE_POINTS[EvidenceSourceType.RESERVATION_SITE]:g}点、レビューサイト {EVIDENCE_POINTS[EvidenceSourceType.REVIEW_SITE]:g}点です。</dd>
-        </div>
-        <div>
-          <dt><strong>カツオ料理の特徴</strong><span>最大 {KATSUO_FEATURES_MAX_POINTS:g}点</span></dt>
-          <dd>料理名の掲載 {KATSUO_DISH_NAME_POINTS:g}点を基礎に、藁焼き {WARAYAKI_POINTS:g}点、塩たたき {SHIO_TATAKI_POINTS:g}点、旬の案内 {SEASONAL_KATSUO_POINTS:g}点を加算します。</dd>
-        </div>
-        <div>
-          <dt><strong>独立した料理根拠URL</strong><span>最大 {INDEPENDENT_SOURCES_MAX_POINTS:g}点</span></dt>
-          <dd>根拠URLをドメイン単位で重複除外し、1ドメインにつき {INDEPENDENT_SOURCE_POINTS_PER_DOMAIN:g}点、最大 {INDEPENDENT_SOURCE_MAX_DOMAINS}ドメインまで加算します。</dd>
-        </div>
-        <div>
-          <dt><strong>新着レビューの評判</strong><span>最大 {RECENT_REVIEWS_MAX_POINTS:g}点</span></dt>
-          <dd>平均評価 {REVIEW_RATING_MAX_POINTS:g}点、確認件数 {REVIEW_COUNT_MAX_POINTS:g}点、情報源数 {REVIEW_SOURCE_MAX_POINTS:g}点で評価。件数は {REVIEW_COUNT_FOR_MAX_POINTS}件、情報源は {REVIEW_SOURCE_COUNT_FOR_MAX_POINTS}サイトで満点です。</dd>
-        </div>
-        <div>
-          <dt><strong>ホテルからの距離</strong><span>最大 {DISTANCE_MAX_POINTS:g}点</span></dt>
-          <dd>ホテルと同じ位置を {DISTANCE_MAX_POINTS:g}点とし、離れるほど直線的に減点。検索距離の上限で0点になります。</dd>
-        </div>
-      </dl>
-      <p>LLMは採点や順位決定を行わず、同じ入力なら同じ結果になります。</p>
-    </aside>
+{_score_note_html()}
   </main>
   <footer>
     <p>Model: {escape(report.model)} · Trace: {escape(report.trace_id)} · <a href="{escape(report.context_markdown, quote=True)}">検証済みMarkdownコンテキスト</a></p>
@@ -573,3 +589,54 @@ def render_top_five_html(report: TopFiveStore, output_path: Path) -> None:
 """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(html, encoding="utf-8")
+
+
+def render_context_markdown(store: CandidateStore) -> str:
+    lines = [
+        "# Katsuo Restaurant Context",
+        "",
+        f"- Generated at: `{store.generated_at.isoformat()}`",
+        f"- Model: `{store.model}`",
+        f"- Trace ID: `{store.trace_id}`",
+        f"- Hotel: {store.hotel.name}",
+        f"- Maximum straight-line distance: {store.max_distance_km:.2f} km",
+        "",
+        "## Verified Restaurant Candidates",
+        "",
+    ]
+    for index, candidate in enumerate(store.candidates, start=1):
+        feature_labels = [
+            "katsuo dish",
+            *selected_feature_labels(
+                candidate,
+                warayaki="warayaki",
+                shio_tataki="shio tataki",
+                seasonal_katsuo="seasonal katsuo",
+            ),
+        ]
+        lines.extend(
+            [
+                f"{index}. **{candidate.name}**",
+                f"   - Address: {candidate.address}",
+                f"   - Coordinates: {candidate.latitude}, {candidate.longitude}",
+                f"   - Distance: {candidate.distance_km:.2f} km",
+                f"   - Katsuo dish: {candidate.katsuo_dish}",
+                f"   - Verified features: {', '.join(feature_labels)}",
+                f"   - Evidence: [{candidate.evidence_url}]({candidate.evidence_url})",
+                "   - Additional verified sources:",
+                *(
+                    f"     - [{source_url}]({source_url})"
+                    for source_url in candidate.source_urls
+                ),
+                "   - Verified reviews:",
+            ]
+        )
+        for review in candidate.recent_reviews:
+            lines.append(
+                "     - "
+                f"{review.published_at.isoformat()} | {review.rating:g}/5 | "
+                f"{review.reviewer_name} | {review.source_name} | "
+                f"[{review.review_url}]({review.review_url}) | {review.summary}"
+            )
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"

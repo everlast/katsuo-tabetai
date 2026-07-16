@@ -13,6 +13,7 @@ from .models import (
     RestaurantCandidateInput,
     ReviewReputation,
     ScoreBreakdown,
+    selected_feature_labels,
 )
 
 EARTH_RADIUS_KM = 6371.0088
@@ -151,13 +152,12 @@ def build_recommendation_reason(
     candidate: RestaurantCandidate,
     reputation: ReviewReputation,
 ) -> str:
-    features: list[str] = []
-    if candidate.has_warayaki:
-        features.append("藁焼き")
-    if candidate.has_shio_tataki:
-        features.append("塩たたき")
-    if candidate.has_seasonal_katsuo:
-        features.append("旬のカツオ")
+    features = selected_feature_labels(
+        candidate,
+        warayaki="藁焼き",
+        shio_tataki="塩たたき",
+        seasonal_katsuo="旬のカツオ",
+    )
     feature_text = "・".join(features) if features else "カツオ料理"
     positives = "・".join(reputation.top_positive_points)
     reason = (

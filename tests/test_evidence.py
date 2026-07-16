@@ -4,11 +4,13 @@ from datetime import date
 
 from katsuo_tabetai.context import KatsuoContext
 from katsuo_tabetai.evidence import (
+    _BoundedPageTextCache,
     is_specific_review_url,
+    normalize_text,
     sanitize_candidate_claims,
     validate_candidate_references,
 )
-from katsuo_tabetai.models import HotelLocation, RestaurantCandidateInput
+from katsuo_tabetai.models import HotelLocation, RecentReview, RestaurantCandidateInput
 from katsuo_tabetai.scraping import canonical_url
 
 from helpers import populate_scraped_pages
@@ -146,6 +148,109 @@ def test_review_for_another_branch_is_rejected(tmp_path) -> None:
     issues = validate_candidate_references(candidate, context.scraped_pages)
 
     assert any("does not confirm the branch or address" in issue for issue in issues)
+
+
+def test_page_text_cache_reuses_normalization_and_keeps_output(tmp_path) -> None:
+    from helpers import _page
+
+    cache = _BoundedPageTextCache(max_total_chars=1_000_000, max_entries=1_024)
+    page = _page("https://example.com/menu", "店舗ページ", "カツオのたたき\n" * 500)
+
+    first = cache.normalized_page_text(page, include_title=True)
+    second = cache.normalized_page_text(page, include_title=True)
+
+    assert first == normalize_text(f"{page.title}\n{page.content}")
+    assert second is first
+    assert cache.normalized_page_text(page, include_title=False) == normalize_text(
+        page.content
+    )
+
+
+def test_page_text_cache_does_not_serve_stale_text_for_modified_content(tmp_path) -> None:
+    from helpers import _page
+
+    cache = _BoundedPageTextCache(max_total_chars=1_000_000, max_entries=1_024)
+    page = _page("https://example.com/menu", "店舗ページ", "住所は高知市本町1-1")
+    assert "本町11" in cache.normalized_page_text(page, include_title=False)
+
+    # content_sha256 が本文と食い違う model_copy 由来のページでも、
+    # 正規化結果は必ず実際の本文に追随する（古いキャッシュを返さない）。
+    modified = page.model_copy(update={"content": "住所は高知市帯屋町9-9"})
+    modified_text = cache.normalized_page_text(modified, include_title=False)
+    assert "帯屋町99" in modified_text
+    assert "本町11" not in modified_text
+
+
+def test_page_text_cache_never_exceeds_total_char_ceiling(tmp_path) -> None:
+    from helpers import _page
+
+    ceiling = 2_000
+    cache = _BoundedPageTextCache(max_total_chars=ceiling, max_entries=1_024)
+    for index in range(50):
+        # 各ページの正規化結果は約600文字。上限を跨ぐと保持分が破棄される。
+        page = _page(
+            f"https://example.com/{index}",
+            f"店舗{index}",
+            f"かつお{index}" * 150,
+        )
+        result = cache.normalized_page_text(page, include_title=False)
+        assert result == normalize_text(page.content)
+        assert cache.total_chars <= ceiling
+
+    oversized = _page(
+        "https://example.com/oversized",
+        "巨大ページ",
+        "鰹" * (ceiling + 100),
+    )
+    before = cache.total_chars
+    assert cache.normalized_page_text(oversized, include_title=False) == normalize_text(
+        oversized.content
+    )
+    # 上限を単体で超える本文はキャッシュへ保持しない。
+    assert cache.total_chars == before
+
+
+def test_page_text_cache_bounds_entry_count_for_tiny_normalizations(tmp_path) -> None:
+    from helpers import _page
+
+    max_entries = 64
+    cache = _BoundedPageTextCache(max_total_chars=1_000_000, max_entries=max_entries)
+    for index in range(500):
+        # 正規化結果が空になる記号だけの本文は total_chars を増やさないため、
+        # SHA-256キーとdictエントリの増加は件数上限で頭打ちにする。
+        page = _page(
+            f"https://example.com/{index}",
+            "記号のみ",
+            "★" * (index + 1),
+        )
+        assert cache.normalized_page_text(page, include_title=False) == ""
+        assert cache.entry_count <= max_entries
+    assert cache.total_chars == 0
+
+
+def test_duplicate_review_identity_is_rejected(tmp_path) -> None:
+    context = _context(tmp_path)
+    candidate = _candidate()
+    original = candidate.recent_reviews[0]
+    duplicate = RecentReview.model_validate(
+        {
+            **original.model_dump(mode="json"),
+            # 表記ゆれ（大文字・全角空白・末尾スラッシュ）でも同一指紋として弾く。
+            "reviewer_name": f"{original.reviewer_name.upper()}　",
+            "review_url": f"{original.review_url}/",
+        }
+    )
+    candidate = candidate.model_copy(
+        update={"recent_reviews": [original, duplicate, *candidate.recent_reviews[1:]]}
+    )
+    populate_scraped_pages(context, [candidate])
+
+    issues = validate_candidate_references(candidate, context.scraped_pages)
+
+    assert issues == [
+        "a duplicate review identity for "
+        f"{duplicate.reviewer_name} on {duplicate.published_at.isoformat()}"
+    ]
 
 
 def test_review_requires_reviewer_date_and_rating_in_same_window(tmp_path) -> None:

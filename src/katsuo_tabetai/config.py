@@ -2,3 +2,10 @@ from typing import Final
 
 
 DEFAULT_MODEL: Final = "gpt-5.6-luna"
+
+# Quality acceptance criteria for collected research.
+RECENT_REVIEW_MAX_AGE_DAYS: Final = 365
+MIN_RECENT_REVIEW_COUNT: Final = 5
+MIN_REVIEW_SOURCE_SITES: Final = 2
+MIN_IN_RANGE_CANDIDATES: Final = 5
+DUPLICATE_LOCATION_THRESHOLD_KM: Final = 0.05

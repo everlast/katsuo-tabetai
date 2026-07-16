@@ -26,7 +26,6 @@ class KatsuoContext:
     evaluation_tool_calls: int = 0
     handoff_calls: int = 0
     scrape_calls: int = 0
-    handoff_summary: str | None = None
     progress_callback: Callable[[str], None] | None = None
 
     @property

@@ -3,7 +3,7 @@ from __future__ import annotations
 from html import escape
 from pathlib import Path
 
-from .models import EvidenceSourceType, TopFiveStore
+from .models import EvidenceSourceType, TopFiveStore, selected_feature_labels
 from .scoring import (
     DISTANCE_MAX_POINTS,
     EVIDENCE_POINTS,
@@ -145,13 +145,15 @@ def _restaurant_row(restaurant) -> str:
         )
         for index, source_url in enumerate(restaurant.source_urls, start=1)
     )
-    features = ["カツオ料理の掲載あり"]
-    if restaurant.has_warayaki:
-        features.append("藁焼き")
-    if restaurant.has_shio_tataki:
-        features.append("塩たたき")
-    if restaurant.has_seasonal_katsuo:
-        features.append("旬の案内")
+    features = [
+        "カツオ料理の掲載あり",
+        *selected_feature_labels(
+            restaurant,
+            warayaki="藁焼き",
+            shio_tataki="塩たたき",
+            seasonal_katsuo="旬の案内",
+        ),
+    ]
     feature_html = "".join(f"<li>{escape(item)}</li>" for item in features)
     review_html = "".join(_review_row(review) for review in restaurant.recent_reviews)
     score_breakdown_html = _score_breakdown(restaurant)

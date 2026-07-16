@@ -7,6 +7,7 @@ import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 from agents import AgentBase, RunContextWrapper, function_tool
 
@@ -25,6 +26,7 @@ from .models import (
     RestaurantCandidateInput,
     ScrapedPage,
     TopFiveStore,
+    selected_feature_labels,
 )
 from .report import render_top_five_html
 from .scoring import apply_range_rule, haversine_km, normalized_url_host, rank_top_five
@@ -74,6 +76,14 @@ def candidate_within_range(
         context.hotel,
         context.max_distance_km,
     ).within_range
+
+
+def write_json_artifact(path: Path, payload: Mapping[str, object]) -> None:
+    """Serialize an output artifact with the shared JSON conventions."""
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _is_same_restaurant_location(
@@ -488,23 +498,19 @@ def persist_discovered_restaurants(
         )
 
     context.output_dir.mkdir(parents=True, exist_ok=True)
-    context.discovered_candidates_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-                "model": context.model,
-                "trace_id": context.trace_id,
-                "hotel": context.hotel.model_dump(mode="json"),
-                "max_distance_km": context.max_distance_km,
-                "collected_count": len(records),
-                "evaluation_eligible_count": evaluation_eligible,
-                "restaurants": records,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
+    write_json_artifact(
+        context.discovered_candidates_path,
+        {
+            "schema_version": 1,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "model": context.model,
+            "trace_id": context.trace_id,
+            "hotel": context.hotel.model_dump(mode="json"),
+            "max_distance_km": context.max_distance_km,
+            "collected_count": len(records),
+            "evaluation_eligible_count": evaluation_eligible,
+            "restaurants": records,
+        },
     )
     return {
         "collected": len(records),
@@ -552,22 +558,18 @@ def persist_restaurant_candidates(
         render_context_markdown(store),
         encoding="utf-8",
     )
-    context.scrape_manifest_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "generated_at": generated_at.isoformat(),
-                "model": context.model,
-                "trace_id": context.trace_id,
-                "pages": [
-                    page.model_dump(mode="json", exclude={"content"})
-                    for page in store.scraped_pages
-                ],
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
+    write_json_artifact(
+        context.scrape_manifest_path,
+        {
+            "schema_version": 1,
+            "generated_at": generated_at.isoformat(),
+            "model": context.model,
+            "trace_id": context.trace_id,
+            "pages": [
+                page.model_dump(mode="json", exclude={"content"})
+                for page in store.scraped_pages
+            ],
+        },
     )
     context.candidates_saved = True
     return {
@@ -662,13 +664,15 @@ def render_context_markdown(store: CandidateStore) -> str:
         "",
     ]
     for index, candidate in enumerate(store.candidates, start=1):
-        feature_labels = ["katsuo dish"]
-        if candidate.has_warayaki:
-            feature_labels.append("warayaki")
-        if candidate.has_shio_tataki:
-            feature_labels.append("shio tataki")
-        if candidate.has_seasonal_katsuo:
-            feature_labels.append("seasonal katsuo")
+        feature_labels = [
+            "katsuo dish",
+            *selected_feature_labels(
+                candidate,
+                warayaki="warayaki",
+                shio_tataki="shio tataki",
+                seasonal_katsuo="seasonal katsuo",
+            ),
+        ]
         lines.extend(
             [
                 f"{index}. **{candidate.name}**",

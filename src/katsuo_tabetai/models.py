@@ -20,6 +20,8 @@ FunctionToolDate = Annotated[
 ]
 PositiveReviewPoint = Annotated[str, Field(min_length=2, max_length=30)]
 ReviewPoint = Annotated[str, Field(min_length=1, max_length=60)]
+Latitude = Annotated[float, Field(ge=-90, le=90)]
+Longitude = Annotated[float, Field(ge=-180, le=180)]
 
 _POINT_LIST_SEPARATOR = re.compile(r'["\']\s*,\s*["\']')
 _POINT_INSTRUCTION_SUFFIX = re.compile(
@@ -71,8 +73,8 @@ EVIDENCE_SOURCE_PRIORITY: Final[dict[EvidenceSourceType, int]] = {
 
 class HotelLocation(BaseModel):
     name: str = Field(min_length=1)
-    latitude: float = Field(ge=-90, le=90)
-    longitude: float = Field(ge=-180, le=180)
+    latitude: Latitude
+    longitude: Longitude
 
 
 class RecentReview(BaseModel):
@@ -126,8 +128,8 @@ class RecentReview(BaseModel):
 class RestaurantCandidateInput(BaseModel):
     name: str = Field(min_length=1)
     address: str = Field(min_length=1)
-    latitude: float = Field(ge=-90, le=90)
-    longitude: float = Field(ge=-180, le=180)
+    latitude: Latitude
+    longitude: Longitude
     katsuo_dish: str = Field(
         min_length=1,
         description="The exact katsuo dish named by the evidence page.",
@@ -153,6 +155,24 @@ class RestaurantCandidateInput(BaseModel):
     has_warayaki: bool
     has_shio_tataki: bool
     has_seasonal_katsuo: bool
+
+
+def selected_feature_labels(
+    candidate: RestaurantCandidateInput,
+    *,
+    warayaki: str,
+    shio_tataki: str,
+    seasonal_katsuo: str,
+) -> list[str]:
+    """Return display labels for the verified katsuo feature flags, in order."""
+    labels: list[str] = []
+    if candidate.has_warayaki:
+        labels.append(warayaki)
+    if candidate.has_shio_tataki:
+        labels.append(shio_tataki)
+    if candidate.has_seasonal_katsuo:
+        labels.append(seasonal_katsuo)
+    return labels
 
 
 class ResearchBatch(BaseModel):
@@ -181,7 +201,9 @@ class RestaurantCandidate(RestaurantCandidateInput):
     within_range: bool
 
 
-class CandidateStore(BaseModel):
+class StoreHeader(BaseModel):
+    """Shared metadata header for persisted candidate and report stores."""
+
     schema_version: Literal[3] = 3
     generated_at: datetime
     model: str = Field(min_length=1)
@@ -189,6 +211,9 @@ class CandidateStore(BaseModel):
     context_markdown: str = "context.md"
     hotel: HotelLocation
     max_distance_km: float = Field(gt=0)
+
+
+class CandidateStore(StoreHeader):
     candidates: list[RestaurantCandidate]
     scraped_pages: list[ScrapedPage]
 
@@ -228,12 +253,5 @@ class RankedRestaurant(RestaurantCandidate):
     recommendation_reason: str = Field(min_length=1)
 
 
-class TopFiveStore(BaseModel):
-    schema_version: Literal[3] = 3
-    generated_at: datetime
-    model: str = Field(min_length=1)
-    trace_id: str = Field(min_length=1)
-    context_markdown: str = "context.md"
-    hotel: HotelLocation
-    max_distance_km: float = Field(gt=0)
+class TopFiveStore(StoreHeader):
     restaurants: list[RankedRestaurant] = Field(min_length=5, max_length=5)

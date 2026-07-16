@@ -5,6 +5,7 @@ import sys
 
 import pytest
 from agents import UserError
+from openai import InternalServerError
 
 import katsuo_tabetai
 from katsuo_tabetai import main as main_module
@@ -29,7 +30,7 @@ def test_parser_uses_crown_palais_kochi_as_default_hotel() -> None:
     assert args.discovery_attempts == 3
     assert args.review_enrichment_attempts == 27
     assert args.api_timeout_seconds == 300.0
-    assert args.api_max_retries == 0
+    assert args.api_max_retries == 5
     assert args.workflow_timeout_seconds == 10800.0
     assert args.model == DEFAULT_MODEL == "gpt-5.6-luna"
 
@@ -159,6 +160,29 @@ def test_main_reports_agents_sdk_errors_without_traceback(monkeypatch) -> None:
     with pytest.raises(
         SystemExit,
         match="Katsuo workflow failed: candidate validation failed",
+    ):
+        main_module.main()
+
+
+def test_main_reports_openai_errors_without_traceback(monkeypatch) -> None:
+    async def fail_run(args):
+        raise InternalServerError(
+            "upstream connection terminated",
+            response=type(
+                "Response",
+                (),
+                {"request": None, "status_code": 500, "headers": {}},
+            )(),
+            body=None,
+        )
+
+    monkeypatch.setattr(main_module, "load_project_environment", lambda: False)
+    monkeypatch.setattr(main_module, "_run", fail_run)
+    monkeypatch.setattr(sys, "argv", ["katsuo-tabetai"])
+
+    with pytest.raises(
+        SystemExit,
+        match="Katsuo workflow failed: upstream connection terminated",
     ):
         main_module.main()
 

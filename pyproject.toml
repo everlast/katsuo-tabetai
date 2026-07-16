@@ -5,6 +5,8 @@ description = "OpenAI Agents SDK learning project for ranking katsuo restaurants
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "beautifulsoup4>=4.13,<5.0",
+  "httpx>=0.28,<1.0",
   "openai-agents>=0.18.0,<0.19.0",
   "pydantic>=2.11,<3.0",
   "python-dotenv>=1.2,<2.0",

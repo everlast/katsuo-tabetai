@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, HttpUrl, WithJsonSchema, field_validator
 
@@ -74,6 +74,11 @@ class RecentReview(BaseModel):
     review_url: FunctionToolHttpUrl = Field(
         description="A page where this specific review can be verified.",
     )
+    reviewer_name: str = Field(
+        min_length=1,
+        max_length=120,
+        description="The reviewer name displayed next to this review.",
+    )
     published_at: FunctionToolDate = Field(
         description=(
             "The explicitly displayed review publication or visit date. If the "
@@ -126,12 +131,13 @@ class RestaurantCandidateInput(BaseModel):
         description="Additional independent pages used to verify the restaurant.",
     )
     recent_reviews: list[RecentReview] = Field(
-        min_length=5,
+        default_factory=list,
         max_length=10,
         description=(
-            "Five to ten distinct recent reviews collected from at least two "
-            "source sites, with displayed dates or visit months, ratings, "
-            "paraphrased summaries, and verifiable URLs."
+            "Zero to ten reviews discovered during collection. A restaurant is "
+            "still collected when fewer than five reviews are available. Ranking "
+            "eligibility later requires at least five verified recent reviews "
+            "from at least two source sites."
         ),
     )
     has_warayaki: bool
@@ -143,10 +149,21 @@ class ResearchBatch(BaseModel):
     candidates: list[RestaurantCandidateInput] = Field(min_length=5, max_length=30)
 
 
+class ScrapedPage(BaseModel):
+    requested_url: HttpUrl
+    final_url: HttpUrl
+    fetched_at: datetime
+    status_code: int = Field(ge=200, lt=300)
+    title: str = Field(default="", max_length=500)
+    content: str = Field(min_length=1)
+    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class RestaurantCacheEntry(BaseModel):
-    schema_version: int = 1
+    schema_version: Literal[2] = 2
     updated_at: datetime
     candidate: RestaurantCandidateInput
+    scraped_pages: list[ScrapedPage]
 
 
 class RestaurantCandidate(RestaurantCandidateInput):
@@ -155,11 +172,15 @@ class RestaurantCandidate(RestaurantCandidateInput):
 
 
 class CandidateStore(BaseModel):
-    schema_version: int = 2
+    schema_version: Literal[3] = 3
     generated_at: datetime
+    model: str = Field(min_length=1)
+    trace_id: str = Field(min_length=1)
+    context_markdown: str = "context.md"
     hotel: HotelLocation
     max_distance_km: float = Field(gt=0)
     candidates: list[RestaurantCandidate]
+    scraped_pages: list[ScrapedPage]
 
 
 class ScoreBreakdown(BaseModel):
@@ -198,8 +219,11 @@ class RankedRestaurant(RestaurantCandidate):
 
 
 class TopFiveStore(BaseModel):
-    schema_version: int = 2
+    schema_version: Literal[3] = 3
     generated_at: datetime
+    model: str = Field(min_length=1)
+    trace_id: str = Field(min_length=1)
+    context_markdown: str = "context.md"
     hotel: HotelLocation
     max_distance_km: float = Field(gt=0)
     restaurants: list[RankedRestaurant] = Field(min_length=5, max_length=5)

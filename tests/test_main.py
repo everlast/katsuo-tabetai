@@ -7,6 +7,7 @@ import pytest
 from agents import UserError
 
 from katsuo_tabetai import main as main_module
+from katsuo_tabetai.config import DEFAULT_MODEL
 from katsuo_tabetai.main import build_parser, load_project_environment
 from katsuo_tabetai.workflow import (
     InsufficientResearchCandidatesError,
@@ -25,6 +26,10 @@ def test_parser_uses_crown_palais_kochi_as_default_hotel() -> None:
     assert args.hotel_lon == 133.5339508
     assert args.max_distance_km == 5.0
     assert args.research_attempts == 3
+    assert args.api_timeout_seconds == 300.0
+    assert args.api_max_retries == 0
+    assert args.workflow_timeout_seconds == 600.0
+    assert args.model == DEFAULT_MODEL == "gpt-5.6-luna"
 
 
 def test_load_project_environment_reads_dotenv(monkeypatch, tmp_path) -> None:
@@ -54,6 +59,48 @@ def test_load_project_environment_preserves_existing_value(
     load_project_environment()
 
     assert os.environ["OPENAI_API_KEY"] == "from-shell"
+
+
+def test_run_applies_timeouts_and_closes_openai_client(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def close(self) -> None:
+            captured["closed"] = True
+
+    async def slow_workflow(**kwargs):
+        await main_module.asyncio.sleep(1)
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(main_module, "AsyncOpenAI", FakeClient)
+    monkeypatch.setattr(
+        main_module,
+        "set_default_openai_client",
+        lambda client: captured.update({"default_client": client}),
+    )
+    monkeypatch.setattr(main_module, "run_katsuo_workflow", slow_workflow)
+    args = build_parser().parse_args(
+        [
+            "--output-dir",
+            str(tmp_path),
+            "--api-timeout-seconds",
+            "12",
+            "--api-max-retries",
+            "1",
+            "--workflow-timeout-seconds",
+            "0.01",
+        ]
+    )
+
+    with pytest.raises(TimeoutError):
+        main_module.asyncio.run(main_module._run(args))
+
+    assert captured["timeout"] == 12
+    assert captured["max_retries"] == 1
+    assert captured["closed"] is True
 
 
 def test_main_reports_agents_sdk_errors_without_traceback(monkeypatch) -> None:
@@ -113,4 +160,35 @@ def test_main_reports_invalid_research_output_without_traceback(monkeypatch) -> 
         SystemExit,
         match="Katsuo workflow failed: malformed structured JSON",
     ):
+        main_module.main()
+
+
+def test_main_reports_workflow_timeout_without_traceback(monkeypatch) -> None:
+    async def fail_run(args):
+        raise TimeoutError
+
+    monkeypatch.setattr(main_module, "load_project_environment", lambda: False)
+    monkeypatch.setattr(main_module, "_run", fail_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["katsuo-tabetai", "--workflow-timeout-seconds", "42"],
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match="Katsuo workflow timed out after 42 seconds",
+    ):
+        main_module.main()
+
+
+def test_main_reports_keyboard_interrupt_without_traceback(monkeypatch) -> None:
+    async def interrupt_run(args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(main_module, "load_project_environment", lambda: False)
+    monkeypatch.setattr(main_module, "_run", interrupt_run)
+    monkeypatch.setattr(sys, "argv", ["katsuo-tabetai"])
+
+    with pytest.raises(SystemExit, match="Katsuo workflow interrupted"):
         main_module.main()

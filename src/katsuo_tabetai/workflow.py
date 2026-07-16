@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import time
+from collections.abc import Awaitable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from agents import (
@@ -18,12 +22,16 @@ from agents import (
 from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 from pydantic import BaseModel, Field
 
+from .config import DEFAULT_MODEL
 from .context import KatsuoContext
-from .models import ResearchBatch
+from .models import ResearchBatch, RestaurantCandidateInput
 from .tools import (
     MIN_IN_RANGE_CANDIDATES,
+    MIN_RECENT_REVIEW_COUNT,
+    MIN_REVIEW_SOURCE_SITES,
     RECENT_REVIEW_MAX_AGE_DAYS,
     CandidatePoolSummary,
+    accumulate_restaurant_candidates,
     cache_restaurant_candidates,
     deduplicate_restaurant_candidates,
     evaluate_and_render_top_five,
@@ -31,9 +39,13 @@ from .tools import (
     load_cached_restaurant_candidates,
     merge_restaurant_candidates,
     partition_candidates_by_review_validity,
+    persist_discovered_restaurants,
     save_restaurant_candidates,
     summarize_candidate_pool,
 )
+from .scraping import scrape_reference_page
+
+PROGRESS_HEARTBEAT_SECONDS = 15.0
 
 
 class EvaluationHandoffInput(BaseModel):
@@ -66,6 +78,7 @@ class RunAudit(BaseModel):
     handoff_callbacks: int
     cached_candidates_loaded: int
     cached_candidates_written: int
+    scrape_tool_calls: int
     last_agent: str
 
 
@@ -73,6 +86,7 @@ class RunAudit(BaseModel):
 class WorkflowOutcome:
     final_output: Any
     last_agent: str
+    model: str
     trace_id: str
     audit: RunAudit
 
@@ -82,6 +96,36 @@ class WorkflowAgents:
     web_researcher: Agent[KatsuoContext]
     researcher: Agent[KatsuoContext]
     evaluator: Agent[KatsuoContext]
+
+
+def _emit_progress(context: KatsuoContext, message: str) -> None:
+    if context.progress_callback is not None:
+        context.progress_callback(message)
+
+
+async def _await_with_progress(
+    awaitable: Awaitable[Any],
+    context: KatsuoContext,
+    label: str,
+) -> Any:
+    task = asyncio.ensure_future(awaitable)
+    started_at = time.monotonic()
+    try:
+        while not task.done():
+            done, _ = await asyncio.wait(
+                {task},
+                timeout=PROGRESS_HEARTBEAT_SECONDS,
+            )
+            if task in done:
+                break
+            elapsed = round(time.monotonic() - started_at)
+            _emit_progress(context, f"{label} 実行中（{elapsed}秒経過）")
+        return await task
+    except BaseException:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        raise
 
 
 def _raw_field(raw_item: Any, field: str) -> Any:
@@ -97,6 +141,7 @@ def audit_run_items(
 ) -> RunAudit:
     web_search_calls = 0
     function_tool_calls = 0
+    scrape_tool_calls = 0
     handoff_items = 0
 
     run_results = (*prior_results, result)
@@ -114,6 +159,10 @@ def audit_run_items(
                 "evaluate_and_render_top_five",
             }:
                 function_tool_calls += 1
+            if raw_type in {"function_call", "function_call_output"} and raw_name == (
+                "scrape_reference_page"
+            ):
+                scrape_tool_calls += 1
             if item_type in {"handoff_call_item", "handoff_output_item"}:
                 handoff_items += 1
 
@@ -128,11 +177,16 @@ def audit_run_items(
         handoff_callbacks=context.handoff_calls,
         cached_candidates_loaded=context.cached_candidates_loaded,
         cached_candidates_written=context.cached_candidates_written,
+        scrape_tool_calls=scrape_tool_calls,
         last_agent=result.last_agent.name,
     )
     if audit.web_search_calls < 1:
         raise RuntimeError(
             "Acceptance check failed: no WebSearchTool call was recorded."
+        )
+    if audit.scrape_tool_calls < 1 or context.scrape_calls < 1:
+        raise RuntimeError(
+            "Acceptance check failed: no successful scrape_reference_page call was recorded."
         )
     if (
         audit.function_tool_calls < 2
@@ -170,8 +224,8 @@ async def on_evaluation_handoff(
     wrapper.context.handoff_summary = input_data.research_summary
 
 
-def _model_override(model: str | None) -> dict[str, str]:
-    return {"model": model} if model else {}
+def _model_override(model: str) -> dict[str, str]:
+    return {"model": model}
 
 
 def _format_rejection_detail(rejections: list[str]) -> str:
@@ -189,35 +243,146 @@ def _format_candidate_detail(summary: CandidatePoolSummary) -> str:
             f"{candidate.distance_km:.2f} km / "
             f"{'IN RANGE' if candidate.within_range else 'OUTSIDE RANGE'}"
         )
-        for candidate in summary.candidates[:20]
+        for candidate in summary.candidates[:50]
     )
     return detail or "- none"
 
 
-def _build_cached_research_prompt(
+def _build_discovery_prompt(
     base_prompt: str,
-    summary: CandidatePoolSummary,
+    context: KatsuoContext,
 ) -> str:
+    collected_summary = summarize_candidate_pool(
+        context,
+        context.collected_candidates,
+    )
     return f"""
 {base_prompt}
 
-店舗キャッシュには現在も条件を満たす範囲内候補が {summary.within_range} 店あります。
-キャッシュだけでTOP 5は作成できますが、情報を最新化するためWeb調査を1回行います。
-変更のない既存候補は再提出せず、新しい範囲内候補、またはレビューや根拠を
-更新できる候補を8店以上調査してください。
+RESEARCH MODE: DISCOVERY
+範囲内でカツオ料理を提供する店舗を網羅的に発見する回です。
+現在 {collected_summary.within_range} 店を収集済みです。未収集店舗をすべて探し、
+新規候補を優先して返してください。新規候補が5店未満なら、出力スキーマを満たすため
+収集済み候補も再提出してください。口コミが5件揃わない店舗も省略せず、空配列のまま
+返してください。この回では各店の口コミ件数より、店舗発見の網羅性を優先します。
 
-Current cached candidates:
-{_format_candidate_detail(summary)}
+Collected candidates:
+{_format_candidate_detail(collected_summary)}
 """.strip()
 
 
-def _build_research_retry_prompt(
+def _enrichment_target_key(
+    candidate: RestaurantCandidateInput,
+) -> tuple[str, str]:
+    return (
+        "".join(candidate.name.casefold().split()),
+        "".join(candidate.address.casefold().split()),
+    )
+
+
+def _select_enrichment_targets(
+    context: KatsuoContext,
+    as_of: date,
+    limit: int = MIN_IN_RANGE_CANDIDATES,
+) -> list[RestaurantCandidateInput]:
+    oldest_allowed = as_of - timedelta(days=RECENT_REVIEW_MAX_AGE_DAYS)
+    eligible_keys = {
+        _enrichment_target_key(candidate) for candidate in context.pending_candidates
+    }
+    source_priority = {
+        "review_site": 0,
+        "reservation_site": 1,
+        "official_tourism": 2,
+        "official_restaurant": 3,
+    }
+
+    def priority(
+        candidate: RestaurantCandidateInput,
+    ) -> tuple[int, int, int, int, str]:
+        recent_reviews = {
+            (
+                str(review.review_url),
+                review.reviewer_name.casefold(),
+                review.published_at,
+                review.rating,
+            )
+            for review in candidate.recent_reviews
+            if oldest_allowed <= review.published_at <= as_of
+        }
+        feature_count = sum(
+            (
+                candidate.has_warayaki,
+                candidate.has_shio_tataki,
+                candidate.has_seasonal_katsuo,
+            )
+        )
+        return (
+            len(recent_reviews),
+            len(candidate.source_urls),
+            source_priority[candidate.evidence_source_type.value],
+            feature_count,
+            candidate.name,
+        )
+
+    ineligible = [
+        candidate
+        for candidate in context.collected_candidates
+        if _enrichment_target_key(candidate) not in eligible_keys
+    ]
+    eligible = [
+        candidate
+        for candidate in context.collected_candidates
+        if _enrichment_target_key(candidate) in eligible_keys
+    ]
+    ineligible.sort(key=priority, reverse=True)
+    eligible.sort(key=priority, reverse=True)
+    return [*ineligible, *eligible][:limit]
+
+
+def _format_enrichment_targets(
+    targets: list[RestaurantCandidateInput],
+) -> str:
+    target_details: list[str] = []
+    for candidate in targets:
+        review_domains = {
+            review.review_url.host for review in candidate.recent_reviews
+        }
+        target_details.append(
+            (
+                f"- {candidate.name} / {candidate.address} / "
+                f"{candidate.latitude:.7f}, {candidate.longitude:.7f} / "
+                f"dish={candidate.katsuo_dish} / evidence={candidate.evidence_url} / "
+                f"current_reviews={len(candidate.recent_reviews)} / "
+                f"current_domains={','.join(sorted(review_domains)) or 'none'} / "
+                "missing_reviews="
+                f"{max(0, MIN_RECENT_REVIEW_COUNT - len(candidate.recent_reviews))} / "
+                "missing_domains="
+                f"{max(0, MIN_REVIEW_SOURCE_SITES - len(review_domains))}"
+            )
+        )
+        target_details.extend(
+            (
+                "  existing-review: "
+                f"{review.review_url} | {review.reviewer_name} | "
+                f"{review.published_at.isoformat()} | {review.rating:.1f}"
+            )
+            for review in candidate.recent_reviews
+        )
+    return "\n".join(target_details)
+
+
+def _build_enrichment_prompt(
     base_prompt: str,
     context: KatsuoContext,
     summary: CandidatePoolSummary,
+    as_of: date,
 ) -> str:
     missing_in_range = max(0, MIN_IN_RANGE_CANDIDATES - summary.within_range)
-    requested_candidates = max(8, missing_in_range + 4)
+    collected_summary = summarize_candidate_pool(
+        context,
+        context.collected_candidates,
+    )
+    targets = _select_enrichment_targets(context, as_of)
     rejection_detail = "\n".join(
         f"- {rejection}" for rejection in context.candidate_rejections[:10]
     )
@@ -226,19 +391,27 @@ def _build_research_retry_prompt(
     return f"""
 {base_prompt}
 
-前回までの調査では保存条件を満たしていません。
-コード判定では {summary.unique_candidates} unique / {summary.within_range} in range です。
-範囲内の有効店舗があと {missing_in_range} 店必要です。
-この回では検証時の棄却に備え、{requested_candidates} 店以上を調査してください。
-IN RANGE の既存候補は変更がない限り再提出せず、別店舗を優先してください。
-OUTSIDE RANGE の候補は件数に含まれません。信頼できるページで座標の誤りを
-確認できた場合だけ、正しい座標で再提出してください。
-棄却された店舗は、理由に対応してレビューをすべて条件内のものへ差し替え、
-2サイト以上・5件以上を満たせる場合は修正候補として再提出して構いません。
-同じチェーンでも支店が違う場合は、支店名・住所・座標を明確に分けてください。
+RESEARCH MODE: ENRICHMENT
+前回までの調査では評価条件を満たす店舗が不足しています。
+範囲内の収集済み候補は {collected_summary.within_range} 店、
+評価可能候補は {summary.within_range} 店で、あと {missing_in_range} 店必要です。
+この回は下記5店舗だけを調査してください。existing-reviewはすでに保存済みなので、
+同じ口コミを再提出せず、missing_reviewsとmissing_domainsを満たす不足分だけを探して
+recent_reviewsへ入れてください。特にmissing_domainsが1なら、current_domainsにない
+レビューサイトを優先してください。新しい店舗や対象外の店舗は返さないでください。
+各口コミページを必ずscrape_reference_pageで取得し、投稿者名、公開日または訪問月、
+5点評価を本文上で照合してください。見つからない口コミを推測して補わず、対象店舗
+自体はrecent_reviewsを空配列にしてでも必ず返してください。既存分と新規分はコードで
+重複排除して累積します。
 
-Previously review-valid candidates:
+Enrichment targets (return each exactly once):
+{_format_enrichment_targets(targets)}
+
+Previously evaluation-eligible candidates:
 {_format_candidate_detail(summary)}
+
+All collected candidates:
+{_format_candidate_detail(collected_summary)}
 
 Rejected candidates:
 {rejection_detail}
@@ -269,7 +442,7 @@ def _format_invalid_research_output_error(
     )
 
 
-def build_evaluator(model: str | None = None) -> Agent[KatsuoContext]:
+def build_evaluator(model: str = DEFAULT_MODEL) -> Agent[KatsuoContext]:
     return Agent[KatsuoContext](
         name="Katsuo Evaluation Agent",
         handoff_description="Deterministically scores saved candidates and renders TOP 5.",
@@ -287,7 +460,7 @@ def build_evaluator(model: str | None = None) -> Agent[KatsuoContext]:
 
 def build_researcher(
     evaluator: Agent[KatsuoContext],
-    model: str | None = None,
+    model: str = DEFAULT_MODEL,
 ) -> Agent[KatsuoContext]:
     evaluation_handoff = handoff(
         agent=evaluator,
@@ -319,34 +492,49 @@ Required workflow, in this exact order:
     return researcher
 
 
-def build_web_researcher(model: str | None = None) -> Agent[KatsuoContext]:
+def build_web_researcher(model: str = DEFAULT_MODEL) -> Agent[KatsuoContext]:
     return Agent[KatsuoContext](
         name="Katsuo Web Research Agent",
         instructions="""
 You research restaurants serving excellent katsuo near the configured hotel in Kochi, Japan.
 
 Required workflow:
-1. Use WebSearchTool to search current restaurant, official, tourism, reservation,
+1. Read RESEARCH MODE from the user input. DISCOVERY finds restaurants broadly;
+   ENRICHMENT researches only the five explicitly listed targets. Never mix modes.
+2. Use WebSearchTool to find current restaurant, official, tourism, reservation,
    review, and map pages. Use more searches if evidence is weak.
-2. Collect at least 8 unique candidates per attempt and prioritize restaurants
-   whose verified coordinates are inside the configured hotel radius. Check the
-   coordinates against a map or official location page and exclude candidates
-   outside the radius. Never invent a URL, dish name, address, or coordinate.
-3. Every candidate must have an evidence_url whose page explicitly names that
-   restaurant's katsuo dish. Prefer official restaurant pages, then official
-   tourism pages, reservation sites, and lastly review sites including Google Maps.
-4. For every candidate, preferably collect 6 distinct reviews from at least two
-   independent review platforms. At least one review must come from each platform,
-   and the review_url hostnames must contain at least two distinct domains. The
-   page must explicitly display each review's date or visit month and its exact
-   rating. When only YYYY-MM is displayed, store YYYY-MM-01 in published_at for
-   recency calculations. Never infer a year, month, or rating. Paraphrase each
+3. In DISCOVERY mode, discover every distinct restaurant serving katsuo inside the
+   configured hotel radius. Aim for at least 15 candidates and return up to 30;
+   prioritize discovery breadth over review depth. In ENRICHMENT mode, return only
+   the five listed targets and focus on obtaining exactly five verifiable reviews
+   per target from at least two domains. In both modes, check coordinates against
+   a map or official location page and never invent a URL, dish, address, coordinate,
+   or review. Do not omit a target merely because its reviews are incomplete.
+4. Call scrape_reference_page for every evidence_url and for each source_urls or
+   review_url entry you include. Every evidence or additional source page must name
+   the restaurant, its address, and its katsuo dish. Set a katsuo feature flag to
+   true only when one of those pages explicitly supports that feature. Prefer
+   official restaurant pages, then official tourism pages, reservation sites,
+   and lastly review sites. source_urls are only for additional katsuo dish
+   evidence; never put review-list, review-detail, or map pages in source_urls.
+5. Try to collect distinct reviews from at least two independent review platforms
+   for every candidate: exactly five in ENRICHMENT mode and up to ten when readily
+   available in DISCOVERY mode. When that is not possible, return the restaurant
+   anyway with the smaller verified review set or an empty recent_reviews list.
+   A ranking-eligible candidate needs reviews from at least two distinct domains.
+   Never invent reviews to reach five. Never use a platform root such as
+   google.com/maps, tabelog.com, or retty.me. A review
+   page must name the restaurant and display the reviewer's name, date or visit
+   month, and exact rating near each other. Store the displayed reviewer in
+   reviewer_name. When only YYYY-MM is displayed, store YYYY-MM-01 in published_at
+   for recency calculations. Never infer a reviewer, year, month, or rating. Paraphrase each
    review in under 500 characters and record 1 to 3 praised aspects as natural
    Japanese phrases of 2 to 30 characters. Include cautions the reviewer actually
    mentioned. Point arrays must contain only the point text, such as
    "藁焼きの香りが良い". Never include field names, JSON syntax, character-count
    notes, or instruction text in a point. Do not copy review text.
-5. Return the verified candidates as the required structured output. Do not rank them.
+6. Return every candidate required by the active mode as structured output. Review
+   and evidence completeness is evaluated later in code. Do not rank candidates.
 """.strip(),
         tools=[
             WebSearchTool(
@@ -357,16 +545,17 @@ Required workflow:
                     "region": "Kochi",
                 },
                 search_context_size="medium",
-            )
+            ),
+            scrape_reference_page,
         ],
         output_type=ResearchBatch,
         model_settings=ModelSettings(tool_choice="required"),
-        reset_tool_choice=False,
+        reset_tool_choice=True,
         **_model_override(model),
     )
 
 
-def build_agents(model: str | None = None) -> WorkflowAgents:
+def build_agents(model: str = DEFAULT_MODEL) -> WorkflowAgents:
     evaluator = build_evaluator(model=model)
     return WorkflowAgents(
         web_researcher=build_web_researcher(model=model),
@@ -380,38 +569,50 @@ async def run_web_research_phase(
     prompt: str,
     context: KatsuoContext,
     max_turns: int,
-    merge_with_existing: bool = False,
+    progress_label: str = "Web調査",
 ) -> Any:
     as_of = datetime.now(timezone.utc).date()
     oldest_allowed = as_of - timedelta(days=RECENT_REVIEW_MAX_AGE_DAYS)
-    result = await Runner.run(
-        starting_agent=agent,
-        input=(
-            f"{prompt}\n口コミの公開日または訪問月は {oldest_allowed.isoformat()} から "
-            f"{as_of.isoformat()} まで（両端を含む）のものだけを採用してください。"
-            "日まで表示されない場合は、その年月の1日（YYYY-MM-01）として保存してください。"
+    _emit_progress(context, f"{progress_label}を開始")
+    result = await _await_with_progress(
+        Runner.run(
+            starting_agent=agent,
+            input=(
+                f"{prompt}\n口コミの公開日または訪問月は {oldest_allowed.isoformat()} から "
+                f"{as_of.isoformat()} まで（両端を含む）のものだけを採用してください。"
+                "日まで表示されない場合は、その年月の1日（YYYY-MM-01）として保存してください。"
+            ),
+            context=context,
+            max_turns=max_turns,
         ),
-        context=context,
-        max_turns=max_turns,
+        context,
+        progress_label,
     )
+    _emit_progress(context, f"{progress_label}のAPI応答を受信")
     research_batch = ResearchBatch.model_validate(result.final_output)
-    accepted, rejections = partition_candidates_by_review_validity(
-        list(research_batch.candidates),
-        as_of,
+    discovered = [
+        candidate
+        for candidate in deduplicate_restaurant_candidates(
+            list(research_batch.candidates)
+        )
+        if summarize_candidate_pool(context, [candidate]).within_range == 1
+    ]
+    context.collected_candidates = accumulate_restaurant_candidates(
+        context.collected_candidates,
+        discovered,
     )
     context.cached_candidates_written += cache_restaurant_candidates(
         context,
-        accepted,
+        discovered,
     )
-    if merge_with_existing:
-        context.pending_candidates = merge_restaurant_candidates(
-            context.pending_candidates,
-            accepted,
-        )
-        context.candidate_rejections.extend(rejections)
-    else:
-        context.pending_candidates = deduplicate_restaurant_candidates(accepted)
-        context.candidate_rejections = rejections
+    accepted, rejections = partition_candidates_by_review_validity(
+        context.collected_candidates,
+        as_of,
+        context.scraped_pages,
+    )
+    context.pending_candidates = deduplicate_restaurant_candidates(accepted)
+    context.candidate_rejections = rejections
+    persist_discovered_restaurants(context, as_of)
     return result
 
 
@@ -422,48 +623,79 @@ async def run_storage_and_evaluation_phase(
 ) -> Any:
     if not context.pending_candidates:
         raise NoValidResearchCandidatesError(
-            "No restaurant candidates passed recent-review validation, so the "
-            "storage and evaluation phase cannot start."
+            f"Collected {len(context.collected_candidates)} in-range restaurant(s), "
+            "but none passed evaluation validation, so the storage and evaluation "
+            "phase cannot start."
             f"{_format_rejection_detail(context.candidate_rejections)}"
         )
     summary = summarize_candidate_pool(context, context.pending_candidates)
     if not summary.is_ready:
         raise InsufficientResearchCandidatesError(
             insufficient_candidate_pool_message(summary, context.max_distance_km)
+            + f" Collected {len(context.collected_candidates)} in-range restaurant(s)."
             + _format_rejection_detail(context.candidate_rejections)
         )
-    return await Runner.run(
-        starting_agent=agent,
-        input=(
-            "Web research is complete and its structured candidates are in context. "
-            "Save them, then hand off to the evaluation agent."
+    label = "候補保存・評価"
+    _emit_progress(context, f"{label}を開始")
+    result = await _await_with_progress(
+        Runner.run(
+            starting_agent=agent,
+            input=(
+                "Web research is complete and its structured candidates are in context. "
+                "Save them, then hand off to the evaluation agent."
+            ),
+            context=context,
+            max_turns=max_turns,
         ),
-        context=context,
-        max_turns=max_turns,
+        context,
+        label,
     )
+    _emit_progress(context, f"{label}を完了")
+    return result
 
 
 async def run_katsuo_workflow(
     context: KatsuoContext,
-    model: str | None = None,
+    model: str = DEFAULT_MODEL,
     max_turns: int = 24,
     research_attempts: int = 3,
 ) -> WorkflowOutcome:
     if research_attempts < 1:
         raise ValueError("research_attempts must be at least 1.")
+    context.model = model
+    context.trace_id = gen_trace_id()
     agents = build_agents(model=model)
     as_of = datetime.now(timezone.utc).date()
     cached_candidates, cache_rejections = load_cached_restaurant_candidates(
         context,
         as_of,
     )
-    context.pending_candidates = merge_restaurant_candidates(
-        context.pending_candidates,
+    context.collected_candidates = accumulate_restaurant_candidates(
+        context.collected_candidates,
         cached_candidates,
     )
+    cached_evaluation_candidates, cached_evaluation_rejections = (
+        partition_candidates_by_review_validity(
+            cached_candidates,
+            as_of,
+            context.scraped_pages,
+        )
+    )
+    context.pending_candidates = merge_restaurant_candidates(
+        context.pending_candidates,
+        cached_evaluation_candidates,
+    )
     context.candidate_rejections.extend(cache_rejections)
+    context.candidate_rejections.extend(cached_evaluation_rejections)
     context.cached_candidates_loaded = len(cached_candidates)
-    trace_id = gen_trace_id()
+    persist_discovered_restaurants(context, as_of)
+    _emit_progress(
+        context,
+        "キャッシュ読込完了: "
+        f"収集済み{len(cached_candidates)}店 / "
+        f"評価可能{len(cached_evaluation_candidates)}店",
+    )
+    trace_id = context.trace_id
     prompt = (
         "高知駅周辺でカツオ料理がおいしい店を調査し、TOP 5を作成してください。"
         f"基準ホテルは{context.hotel.name} "
@@ -479,17 +711,8 @@ async def run_katsuo_workflow(
         },
     ):
         research_results = []
-        initial_summary = summarize_candidate_pool(context, context.pending_candidates)
-        if initial_summary.is_ready:
-            current_prompt = _build_cached_research_prompt(prompt, initial_summary)
-        elif context.pending_candidates or context.candidate_rejections:
-            current_prompt = _build_research_retry_prompt(
-                prompt,
-                context,
-                initial_summary,
-            )
-        else:
-            current_prompt = prompt
+        current_prompt = _build_discovery_prompt(prompt, context)
+        research_mode = "店舗発見"
         for attempt in range(1, research_attempts + 1):
             try:
                 research_result = await run_web_research_phase(
@@ -497,30 +720,45 @@ async def run_katsuo_workflow(
                     prompt=current_prompt,
                     context=context,
                     max_turns=max_turns,
-                    merge_with_existing=bool(
-                        research_results
-                        or context.pending_candidates
-                        or context.candidate_rejections
-                    ),
+                    progress_label=f"{research_mode} {attempt}/{research_attempts}",
                 )
             except ModelBehaviorError as exc:
                 if attempt >= research_attempts:
                     raise InvalidResearchOutputError(
                         _format_invalid_research_output_error(attempt, exc)
                     ) from exc
-                current_prompt = _build_invalid_output_retry_prompt(prompt, attempt + 1)
+                current_prompt = _build_invalid_output_retry_prompt(
+                    current_prompt,
+                    attempt + 1,
+                )
                 continue
 
             research_results.append(research_result)
             summary = summarize_candidate_pool(context, context.pending_candidates)
+            _emit_progress(
+                context,
+                "候補収集・検証完了: "
+                f"収集済み{len(context.collected_candidates)}店 / "
+                f"評価可能{summary.unique_candidates}店",
+            )
             if summary.is_ready:
                 break
             if attempt < research_attempts:
-                current_prompt = _build_research_retry_prompt(
-                    prompt,
+                collected_summary = summarize_candidate_pool(
                     context,
-                    summary,
+                    context.collected_candidates,
                 )
+                if collected_summary.within_range < MIN_IN_RANGE_CANDIDATES:
+                    current_prompt = _build_discovery_prompt(prompt, context)
+                    research_mode = "店舗発見"
+                else:
+                    current_prompt = _build_enrichment_prompt(
+                        prompt,
+                        context,
+                        summary,
+                        as_of,
+                    )
+                    research_mode = "口コミ補完"
         result = await run_storage_and_evaluation_phase(
             agent=agents.researcher,
             context=context,
@@ -533,9 +771,40 @@ async def run_katsuo_workflow(
             f"{result.last_agent.name!r}, expected {agents.evaluator.name!r}."
         )
     audit = audit_run_items(result, context, prior_results=tuple(research_results))
+    _emit_progress(context, "実行監査と成果物保存を開始")
+    context.run_manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "model": context.model,
+                "trace_id": trace_id,
+                "trace_dashboard": "https://platform.openai.com/traces",
+                "audit": audit.model_dump(),
+                "artifacts": {
+                    "discovered_restaurants": str(
+                        context.discovered_candidates_path
+                    ),
+                    "context_markdown": str(context.context_markdown_path),
+                    "scrape_manifest": str(context.scrape_manifest_path),
+                    "candidates_json": str(context.candidates_path),
+                    "top_five_json": str(context.top_five_path),
+                    "html": str(context.html_path),
+                },
+                "collection": {
+                    "collected": len(context.collected_candidates),
+                    "evaluation_eligible": len(context.pending_candidates),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     return WorkflowOutcome(
         final_output=result.final_output,
         last_agent=result.last_agent.name,
+        model=context.model,
         trace_id=trace_id,
         audit=audit,
     )

@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from pydantic import ValidationError
 
 from katsuo_tabetai.context import KatsuoContext
 from katsuo_tabetai.models import (
@@ -16,12 +15,14 @@ from katsuo_tabetai.tools import (
     RECENT_REVIEW_MAX_AGE_DAYS,
     cache_restaurant_candidates,
     create_top_five_report,
+    deduplicate_restaurant_candidates,
     load_cached_restaurant_candidates,
     partition_candidates_by_review_validity,
     persist_restaurant_candidates,
 )
 
-from test_scoring import make_candidate
+from test_scoring import HOTEL, make_candidate
+from helpers import populate_scraped_pages
 
 
 def candidate_input(index: int) -> RestaurantCandidateInput:
@@ -42,14 +43,15 @@ def test_function_tool_core_saves_structured_data_and_html(tmp_path) -> None:
         output_dir=tmp_path,
     )
 
-    save_result = persist_restaurant_candidates(
-        context,
-        [candidate_input(index) for index in range(1, 7)],
-    )
+    candidates = [candidate_input(index) for index in range(1, 7)]
+    populate_scraped_pages(context, candidates)
+    save_result = persist_restaurant_candidates(context, candidates)
     report_result = create_top_five_report(context)
 
     assert save_result["within_range"] == 6
     assert context.candidates_path.exists()
+    assert context.context_markdown_path.exists()
+    assert context.scrape_manifest_path.exists()
     assert context.top_five_path.exists()
     assert context.html_path.exists()
     top_five = TopFiveStore.model_validate_json(
@@ -59,6 +61,14 @@ def test_function_tool_core_saves_structured_data_and_html(tmp_path) -> None:
     assert all(item.recommendation_reason for item in top_five.restaurants)
     assert all(len(item.recent_reviews) >= 5 for item in top_five.restaurants)
     assert report_result["status"] == "completed"
+    markdown = context.context_markdown_path.read_text(encoding="utf-8")
+    assert "# Katsuo Restaurant Context" in markdown
+    assert "gpt-5.6-luna" in markdown
+    assert "Reviewer 1-1" in markdown
+    assert str(candidates[0].source_urls[0]) in markdown
+    assert "Verified features" in markdown
+    manifest = context.scrape_manifest_path.read_text(encoding="utf-8")
+    assert '"content"' not in manifest
 
 
 def test_candidate_save_keeps_same_name_at_distinct_locations(tmp_path) -> None:
@@ -84,6 +94,7 @@ def test_candidate_save_keeps_same_name_at_distinct_locations(tmp_path) -> None:
         branch_b,
         *[candidate_input(index) for index in range(3, 6)],
     ]
+    populate_scraped_pages(context, candidates)
 
     save_result = persist_restaurant_candidates(context, candidates)
 
@@ -191,11 +202,13 @@ def test_restaurant_cache_writes_and_reloads_one_file_per_store(tmp_path) -> Non
         output_dir=tmp_path,
     )
     candidates = [candidate_input(index) for index in range(1, 4)]
+    populate_scraped_pages(context, candidates)
 
     written = cache_restaurant_candidates(context, candidates)
     updated_candidate = candidates[0].model_copy(
         update={"katsuo_dish": "Updated katsuo dish"}
     )
+    populate_scraped_pages(context, [updated_candidate])
     cache_restaurant_candidates(context, [updated_candidate])
     loaded, rejections = load_cached_restaurant_candidates(context, date.today())
 
@@ -203,10 +216,13 @@ def test_restaurant_cache_writes_and_reloads_one_file_per_store(tmp_path) -> Non
     assert written == 3
     assert len(cache_files) == 3
     assert rejections == []
-    assert [candidate.name for candidate in loaded] == [
+    assert sorted(candidate.name for candidate in loaded) == sorted(
         candidate.name for candidate in candidates
-    ]
-    assert loaded[0].katsuo_dish == "Updated katsuo dish"
+    )
+    updated_loaded = next(
+        candidate for candidate in loaded if candidate.name == candidates[0].name
+    )
+    assert updated_loaded.katsuo_dish == "Updated katsuo dish"
     assert all('"candidate"' in path.read_text(encoding="utf-8") for path in cache_files)
 
 
@@ -220,10 +236,9 @@ def test_restaurant_cache_bootstraps_from_existing_aggregate_store(tmp_path) -> 
         max_distance_km=2.5,
         output_dir=tmp_path,
     )
-    persist_restaurant_candidates(
-        context,
-        [candidate_input(index) for index in range(1, 7)],
-    )
+    candidates = [candidate_input(index) for index in range(1, 7)]
+    populate_scraped_pages(context, candidates)
+    persist_restaurant_candidates(context, candidates)
 
     loaded, rejections = load_cached_restaurant_candidates(context, date.today())
 
@@ -232,13 +247,139 @@ def test_restaurant_cache_bootstraps_from_existing_aggregate_store(tmp_path) -> 
     assert len(list(context.restaurant_cache_dir.glob("*.json"))) == 6
 
 
-def test_candidate_input_requires_at_least_five_reviews() -> None:
+def test_restaurant_cache_ignores_legacy_schema_without_scraped_evidence(
+    tmp_path,
+) -> None:
+    context = KatsuoContext(
+        hotel=HOTEL,
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    candidate = candidate_input(1)
+    populate_scraped_pages(context, [candidate])
+    cache_restaurant_candidates(context, [candidate])
+    cache_path = next(context.restaurant_cache_dir.glob("*.json"))
+    cache_path.write_text(
+        cache_path.read_text(encoding="utf-8").replace(
+            '"schema_version": 2', '"schema_version": 1'
+        ),
+        encoding="utf-8",
+    )
+
+    loaded, rejections = load_cached_restaurant_candidates(context, date.today())
+
+    assert loaded == []
+    assert any("Cache ignored" in rejection for rejection in rejections)
+
+
+def test_candidate_input_allows_incomplete_reviews_for_discovery() -> None:
     candidate = candidate_input(1)
     payload = candidate.model_dump()
-    payload["recent_reviews"] = payload["recent_reviews"][:4]
+    payload["recent_reviews"] = []
 
-    with pytest.raises(ValidationError):
-        RestaurantCandidateInput.model_validate(payload)
+    discovered = RestaurantCandidateInput.model_validate(payload)
+
+    assert discovered.recent_reviews == []
+
+
+def test_discovery_cache_saves_in_range_candidate_without_reviews_or_pages(
+    tmp_path,
+) -> None:
+    context = KatsuoContext(
+        hotel=HOTEL,
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    candidate = candidate_input(1).model_copy(update={"recent_reviews": []})
+
+    written = cache_restaurant_candidates(context, [candidate])
+    loaded, rejections = load_cached_restaurant_candidates(context, date.today())
+
+    assert written == 1
+    assert rejections == []
+    assert loaded == [candidate]
+    assert len(list(context.restaurant_cache_dir.glob("*.json"))) == 1
+
+
+def test_discovery_cache_skips_candidate_outside_location_range(tmp_path) -> None:
+    context = KatsuoContext(
+        hotel=HOTEL,
+        max_distance_km=0.01,
+        output_dir=tmp_path,
+    )
+    candidate = candidate_input(1).model_copy(update={"recent_reviews": []})
+
+    written = cache_restaurant_candidates(context, [candidate])
+
+    assert written == 0
+    assert not context.restaurant_cache_dir.exists()
+
+
+def test_discovery_cache_accumulates_reviews_across_research_runs(tmp_path) -> None:
+    context = KatsuoContext(
+        hotel=HOTEL,
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    candidate = candidate_input(1)
+    first_observation = candidate.model_copy(
+        update={"recent_reviews": candidate.recent_reviews[:2]}
+    )
+    second_observation = candidate.model_copy(
+        update={"recent_reviews": candidate.recent_reviews[2:]}
+    )
+
+    cache_restaurant_candidates(context, [first_observation])
+    cache_restaurant_candidates(context, [second_observation])
+    loaded, rejections = load_cached_restaurant_candidates(context, date.today())
+
+    assert rejections == []
+    assert len(loaded) == 1
+    assert len(loaded[0].recent_reviews) == 5
+    assert {review.reviewer_name for review in loaded[0].recent_reviews} == {
+        review.reviewer_name for review in candidate.recent_reviews
+    }
+
+
+def test_discovery_cache_keeps_richer_observation_when_refresh_is_incomplete(
+    tmp_path,
+) -> None:
+    context = KatsuoContext(
+        hotel=HOTEL,
+        max_distance_km=2.5,
+        output_dir=tmp_path,
+    )
+    candidate = candidate_input(1)
+    incomplete_refresh = candidate.model_copy(
+        update={
+            "katsuo_dish": "Incomplete refresh dish",
+            "source_urls": [],
+            "recent_reviews": [],
+        }
+    )
+
+    cache_restaurant_candidates(context, [candidate])
+    cache_restaurant_candidates(context, [incomplete_refresh])
+    loaded, rejections = load_cached_restaurant_candidates(context, date.today())
+
+    assert rejections == []
+    assert len(loaded) == 1
+    assert loaded[0].katsuo_dish == candidate.katsuo_dish
+    assert loaded[0].recent_reviews == candidate.recent_reviews
+
+
+def test_deduplication_merges_qualified_name_alias_at_same_address() -> None:
+    candidate = candidate_input(1)
+    qualified_alias = candidate.model_copy(
+        update={"name": f"四季料理 {candidate.name}"}
+    )
+    unrelated_store = candidate.model_copy(update={"name": "Unrelated Store"})
+
+    deduplicated = deduplicate_restaurant_candidates(
+        [candidate, qualified_alias, unrelated_store]
+    )
+
+    assert deduplicated == [candidate, unrelated_store]
 
 
 def test_candidate_save_rejects_duplicate_reviews(tmp_path) -> None:

@@ -20,27 +20,27 @@ EARTH_RADIUS_KM = 6371.0088
 TWO_PLACES = Decimal("0.01")
 
 EVIDENCE_POINTS: Final = {
-    EvidenceSourceType.OFFICIAL_RESTAURANT: Decimal("25"),
-    EvidenceSourceType.OFFICIAL_TOURISM: Decimal("21"),
-    EvidenceSourceType.RESERVATION_SITE: Decimal("16"),
-    EvidenceSourceType.REVIEW_SITE: Decimal("10"),
+    EvidenceSourceType.OFFICIAL_RESTAURANT: Decimal("20"),
+    EvidenceSourceType.OFFICIAL_TOURISM: Decimal("17"),
+    EvidenceSourceType.RESERVATION_SITE: Decimal("13"),
+    EvidenceSourceType.REVIEW_SITE: Decimal("8"),
 }
-KATSUO_DISH_NAME_POINTS: Final = Decimal("8")
-WARAYAKI_POINTS: Final = Decimal("5")
-SHIO_TATAKI_POINTS: Final = Decimal("4")
-SEASONAL_KATSUO_POINTS: Final = Decimal("3")
+KATSUO_DISH_NAME_POINTS: Final = Decimal("6")
+WARAYAKI_POINTS: Final = Decimal("4")
+SHIO_TATAKI_POINTS: Final = Decimal("3")
+SEASONAL_KATSUO_POINTS: Final = Decimal("2")
 
 INDEPENDENT_SOURCE_POINTS_PER_DOMAIN: Final = Decimal("2")
 INDEPENDENT_SOURCE_MAX_DOMAINS: Final = 5
 
-REVIEW_RATING_MAX_POINTS: Final = Decimal("20")
+REVIEW_RATING_MAX_POINTS: Final = Decimal("32")
 REVIEW_RATING_SCALE_MAX: Final = Decimal("5")
-REVIEW_COUNT_MAX_POINTS: Final = Decimal("3")
+REVIEW_COUNT_MAX_POINTS: Final = Decimal("5")
 REVIEW_COUNT_FOR_MAX_POINTS: Final = 5
-REVIEW_SOURCE_MAX_POINTS: Final = Decimal("2")
+REVIEW_SOURCE_MAX_POINTS: Final = Decimal("3")
 REVIEW_SOURCE_COUNT_FOR_MAX_POINTS: Final = 2
 
-DISTANCE_MAX_POINTS: Final = Decimal("20")
+DISTANCE_MAX_POINTS: Final = Decimal("15")
 
 EVIDENCE_MAX_POINTS: Final = max(EVIDENCE_POINTS.values())
 KATSUO_FEATURES_MAX_POINTS: Final = (

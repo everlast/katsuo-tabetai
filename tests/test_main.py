@@ -6,6 +6,7 @@ import sys
 import pytest
 from agents import UserError
 
+import katsuo_tabetai
 from katsuo_tabetai import main as main_module
 from katsuo_tabetai.config import DEFAULT_MODEL
 from katsuo_tabetai.main import build_parser, load_project_environment
@@ -30,6 +31,12 @@ def test_parser_uses_crown_palais_kochi_as_default_hotel() -> None:
     assert args.api_max_retries == 0
     assert args.workflow_timeout_seconds == 600.0
     assert args.model == DEFAULT_MODEL == "gpt-5.6-luna"
+
+
+def test_package_version_attribute_matches_installed_metadata() -> None:
+    from importlib.metadata import version
+
+    assert katsuo_tabetai.__version__ == version("katsuo-tabetai")
 
 
 def test_load_project_environment_reads_dotenv(monkeypatch, tmp_path) -> None:

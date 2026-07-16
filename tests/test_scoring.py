@@ -215,6 +215,21 @@ def test_independent_source_points_are_capped_at_five_domains() -> None:
     assert score_candidate(six_domains, 2.5).independent_sources == 10.0
 
 
+def test_independent_source_points_deduplicate_urls_on_the_same_domain() -> None:
+    candidate = make_candidate(1)
+    url_type = type(candidate.evidence_url)
+    candidate = candidate.model_copy(
+        update={
+            "source_urls": [
+                url_type("https://tourism.example/restaurant/1"),
+                url_type("https://tourism.example/restaurant/1/menu"),
+            ]
+        }
+    )
+
+    assert score_candidate(candidate, 2.5).independent_sources == 4.0
+
+
 def test_recent_review_points_have_a_forty_point_maximum() -> None:
     candidate = make_candidate(1, review_rating=5.0)
 

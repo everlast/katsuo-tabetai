@@ -26,10 +26,11 @@ def test_parser_uses_crown_palais_kochi_as_default_hotel() -> None:
     assert args.hotel_lat == 33.5577702
     assert args.hotel_lon == 133.5339508
     assert args.max_distance_km == 5.0
-    assert args.research_attempts == 3
+    assert args.discovery_attempts == 3
+    assert args.review_enrichment_attempts == 27
     assert args.api_timeout_seconds == 300.0
     assert args.api_max_retries == 0
-    assert args.workflow_timeout_seconds == 600.0
+    assert args.workflow_timeout_seconds == 10800.0
     assert args.model == DEFAULT_MODEL == "gpt-5.6-luna"
 
 
@@ -107,6 +108,43 @@ def test_run_applies_timeouts_and_closes_openai_client(monkeypatch, tmp_path) ->
 
     assert captured["timeout"] == 12
     assert captured["max_retries"] == 1
+    assert captured["closed"] is True
+
+
+def test_run_passes_separate_research_attempt_counts(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def close(self) -> None:
+            captured["closed"] = True
+
+    async def capture_workflow(**kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("captured")
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(main_module, "AsyncOpenAI", FakeClient)
+    monkeypatch.setattr(main_module, "set_default_openai_client", lambda client: None)
+    monkeypatch.setattr(main_module, "run_katsuo_workflow", capture_workflow)
+    args = build_parser().parse_args(
+        [
+            "--output-dir",
+            str(tmp_path),
+            "--discovery-attempts",
+            "5",
+            "--review-enrichment-attempts",
+            "12",
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="captured"):
+        main_module.asyncio.run(main_module._run(args))
+
+    assert captured["discovery_attempts"] == 5
+    assert captured["review_enrichment_attempts"] == 12
     assert captured["closed"] is True
 
 

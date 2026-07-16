@@ -40,7 +40,7 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
     for label in (
         "カツオ料理の根拠種別",
         "カツオ料理の特徴",
-        "独立した料理根拠URL",
+        "独立した料理根拠ドメイン",
         "新着レビューの評判",
         "ホテルからの距離",
         "平均評価",
@@ -48,6 +48,7 @@ def test_html_contains_top_five_and_evidence_links(tmp_path) -> None:
         "情報源数",
     ):
         assert label in html
+    assert "独立した料理根拠URL" not in html
     assert html.count('class="restaurant"') == 5
     assert "--rank: #004AAD;" in html
     assert "background: var(--rank);" in html

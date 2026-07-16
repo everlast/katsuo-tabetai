@@ -55,25 +55,32 @@ def normalize_text(value: str) -> str:
 
 
 class _BoundedPageTextCache:
-    """Normalized page texts keyed by a source digest, with a hard ceiling.
+    """Normalized page texts keyed by a source digest, with hard ceilings.
 
     Validation passes re-normalize the same page bodies (up to 100k
     characters) once per checked claim, so reusing each page's normalization
     removes the dominant repeated cost. Keys hold a freshly computed SHA-256
-    of the exact source text instead of the body itself, only the normalized
-    output is retained, and the cache never keeps more than
-    ``max_total_chars`` characters, so a long-lived process cannot grow it
-    without bound.
+    of the exact source text instead of the body itself, and only the
+    normalized output is retained. The cache never keeps more than
+    ``max_total_chars`` characters of normalized text nor more than
+    ``max_entries`` entries — the entry bound also caps key and dict overhead
+    for inputs whose normalized text is empty or tiny — so a long-lived
+    process cannot grow it without bound.
     """
 
-    def __init__(self, max_total_chars: int) -> None:
+    def __init__(self, max_total_chars: int, max_entries: int) -> None:
         self.max_total_chars = max_total_chars
+        self.max_entries = max_entries
         self._entries: dict[str, str] = {}
         self._total_chars = 0
 
     @property
     def total_chars(self) -> int:
         return self._total_chars
+
+    @property
+    def entry_count(self) -> int:
+        return len(self._entries)
 
     def normalized_page_text(self, page: ScrapedPage, *, include_title: bool) -> str:
         source = f"{page.title}\n{page.content}" if include_title else page.content
@@ -83,7 +90,10 @@ class _BoundedPageTextCache:
             return cached
         normalized = normalize_text(source)
         if len(normalized) <= self.max_total_chars:
-            if self._total_chars + len(normalized) > self.max_total_chars:
+            if (
+                self._total_chars + len(normalized) > self.max_total_chars
+                or len(self._entries) >= self.max_entries
+            ):
                 self._entries.clear()
                 self._total_chars = 0
             self._entries[key] = normalized
@@ -91,7 +101,7 @@ class _BoundedPageTextCache:
         return normalized
 
 
-_PAGE_TEXT_CACHE = _BoundedPageTextCache(max_total_chars=5_000_000)
+_PAGE_TEXT_CACHE = _BoundedPageTextCache(max_total_chars=5_000_000, max_entries=2_048)
 
 
 def _name_aliases(name: str) -> set[str]:

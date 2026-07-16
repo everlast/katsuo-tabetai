@@ -153,7 +153,7 @@ def test_review_for_another_branch_is_rejected(tmp_path) -> None:
 def test_page_text_cache_reuses_normalization_and_keeps_output(tmp_path) -> None:
     from helpers import _page
 
-    cache = _BoundedPageTextCache(max_total_chars=1_000_000)
+    cache = _BoundedPageTextCache(max_total_chars=1_000_000, max_entries=1_024)
     page = _page("https://example.com/menu", "店舗ページ", "カツオのたたき\n" * 500)
 
     first = cache.normalized_page_text(page, include_title=True)
@@ -169,7 +169,7 @@ def test_page_text_cache_reuses_normalization_and_keeps_output(tmp_path) -> None
 def test_page_text_cache_does_not_serve_stale_text_for_modified_content(tmp_path) -> None:
     from helpers import _page
 
-    cache = _BoundedPageTextCache(max_total_chars=1_000_000)
+    cache = _BoundedPageTextCache(max_total_chars=1_000_000, max_entries=1_024)
     page = _page("https://example.com/menu", "店舗ページ", "住所は高知市本町1-1")
     assert "本町11" in cache.normalized_page_text(page, include_title=False)
 
@@ -185,7 +185,7 @@ def test_page_text_cache_never_exceeds_total_char_ceiling(tmp_path) -> None:
     from helpers import _page
 
     ceiling = 2_000
-    cache = _BoundedPageTextCache(max_total_chars=ceiling)
+    cache = _BoundedPageTextCache(max_total_chars=ceiling, max_entries=1_024)
     for index in range(50):
         # 各ページの正規化結果は約600文字。上限を跨ぐと保持分が破棄される。
         page = _page(
@@ -208,6 +208,24 @@ def test_page_text_cache_never_exceeds_total_char_ceiling(tmp_path) -> None:
     )
     # 上限を単体で超える本文はキャッシュへ保持しない。
     assert cache.total_chars == before
+
+
+def test_page_text_cache_bounds_entry_count_for_tiny_normalizations(tmp_path) -> None:
+    from helpers import _page
+
+    max_entries = 64
+    cache = _BoundedPageTextCache(max_total_chars=1_000_000, max_entries=max_entries)
+    for index in range(500):
+        # 正規化結果が空になる記号だけの本文は total_chars を増やさないため、
+        # SHA-256キーとdictエントリの増加は件数上限で頭打ちにする。
+        page = _page(
+            f"https://example.com/{index}",
+            "記号のみ",
+            "★" * (index + 1),
+        )
+        assert cache.normalized_page_text(page, include_title=False) == ""
+        assert cache.entry_count <= max_entries
+    assert cache.total_chars == 0
 
 
 def test_duplicate_review_identity_is_rejected(tmp_path) -> None:

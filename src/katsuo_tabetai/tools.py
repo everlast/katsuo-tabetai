@@ -518,6 +518,47 @@ def persist_discovered_restaurants(
     }
 
 
+def _collect_candidate_pages(
+    candidates: list[RestaurantCandidateInput],
+    pages: Mapping[str, ScrapedPage],
+) -> list[ScrapedPage]:
+    """Collect each candidate's scraped pages once, keyed by requested URL."""
+    stored_pages: dict[str, ScrapedPage] = {}
+    for candidate in candidates:
+        for page in scraped_pages_for_candidate(candidate, pages):
+            stored_pages[canonical_url(page.requested_url)] = page
+    return list(stored_pages.values())
+
+
+def _write_candidate_artifacts(
+    context: KatsuoContext,
+    store: CandidateStore,
+) -> None:
+    """Write the candidate store JSON, Markdown context, and scrape manifest."""
+    context.output_dir.mkdir(parents=True, exist_ok=True)
+    context.candidates_path.write_text(
+        store.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    context.context_markdown_path.write_text(
+        render_context_markdown(store),
+        encoding="utf-8",
+    )
+    write_json_artifact(
+        context.scrape_manifest_path,
+        {
+            "schema_version": 1,
+            "generated_at": store.generated_at.isoformat(),
+            "model": context.model,
+            "trace_id": context.trace_id,
+            "pages": [
+                page.model_dump(mode="json", exclude={"content"})
+                for page in store.scraped_pages
+            ],
+        },
+    )
+
+
 def persist_restaurant_candidates(
     context: KatsuoContext,
     candidates: list[RestaurantCandidateInput],
@@ -536,10 +577,6 @@ def persist_restaurant_candidates(
             insufficient_candidate_pool_message(summary, context.max_distance_km)
         )
 
-    stored_pages: dict[str, ScrapedPage] = {}
-    for candidate in deduplicated:
-        for page in scraped_pages_for_candidate(candidate, context.scraped_pages):
-            stored_pages[canonical_url(page.requested_url)] = page
     store = CandidateStore(
         generated_at=generated_at,
         model=context.model,
@@ -547,30 +584,9 @@ def persist_restaurant_candidates(
         hotel=context.hotel,
         max_distance_km=context.max_distance_km,
         candidates=summary.candidates,
-        scraped_pages=list(stored_pages.values()),
+        scraped_pages=_collect_candidate_pages(deduplicated, context.scraped_pages),
     )
-    context.output_dir.mkdir(parents=True, exist_ok=True)
-    context.candidates_path.write_text(
-        store.model_dump_json(indent=2),
-        encoding="utf-8",
-    )
-    context.context_markdown_path.write_text(
-        render_context_markdown(store),
-        encoding="utf-8",
-    )
-    write_json_artifact(
-        context.scrape_manifest_path,
-        {
-            "schema_version": 1,
-            "generated_at": generated_at.isoformat(),
-            "model": context.model,
-            "trace_id": context.trace_id,
-            "pages": [
-                page.model_dump(mode="json", exclude={"content"})
-                for page in store.scraped_pages
-            ],
-        },
-    )
+    _write_candidate_artifacts(context, store)
     context.candidates_saved = True
     return {
         "status": "saved",

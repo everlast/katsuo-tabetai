@@ -4,6 +4,7 @@ import re
 import unicodedata
 from collections.abc import Mapping
 from datetime import date
+from functools import lru_cache
 from urllib.parse import urlsplit
 
 from .models import RecentReview, RestaurantCandidateInput, ScrapedPage
@@ -48,6 +49,10 @@ _MONTH_NAMES = (
 )
 
 
+# Validation passes re-normalize the same page bodies (up to 100k characters)
+# once per checked claim, so memoizing this pure function removes the dominant
+# repeated cost without changing any output.
+@lru_cache(maxsize=4096)
 def normalize_text(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).translate(_DASHES).casefold()
     return re.sub(r"[^0-9a-zぁ-んァ-ヶ一-龠]+", "", normalized)

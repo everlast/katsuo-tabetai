@@ -8,7 +8,7 @@ from katsuo_tabetai.evidence import (
     sanitize_candidate_claims,
     validate_candidate_references,
 )
-from katsuo_tabetai.models import HotelLocation, RestaurantCandidateInput
+from katsuo_tabetai.models import HotelLocation, RecentReview, RestaurantCandidateInput
 from katsuo_tabetai.scraping import canonical_url
 
 from helpers import populate_scraped_pages
@@ -146,6 +146,31 @@ def test_review_for_another_branch_is_rejected(tmp_path) -> None:
     issues = validate_candidate_references(candidate, context.scraped_pages)
 
     assert any("does not confirm the branch or address" in issue for issue in issues)
+
+
+def test_duplicate_review_identity_is_rejected(tmp_path) -> None:
+    context = _context(tmp_path)
+    candidate = _candidate()
+    original = candidate.recent_reviews[0]
+    duplicate = RecentReview.model_validate(
+        {
+            **original.model_dump(mode="json"),
+            # 表記ゆれ（大文字・全角空白・末尾スラッシュ）でも同一指紋として弾く。
+            "reviewer_name": f"{original.reviewer_name.upper()}　",
+            "review_url": f"{original.review_url}/",
+        }
+    )
+    candidate = candidate.model_copy(
+        update={"recent_reviews": [original, duplicate, *candidate.recent_reviews[1:]]}
+    )
+    populate_scraped_pages(context, [candidate])
+
+    issues = validate_candidate_references(candidate, context.scraped_pages)
+
+    assert issues == [
+        "a duplicate review identity for "
+        f"{duplicate.reviewer_name} on {duplicate.published_at.isoformat()}"
+    ]
 
 
 def test_review_requires_reviewer_date_and_rating_in_same_window(tmp_path) -> None:

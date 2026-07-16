@@ -141,17 +141,21 @@ def _raw_field(raw_item: Any, field: str) -> Any:
     return getattr(raw_item, field, None)
 
 
-def audit_run_items(
-    result: Any,
-    context: KatsuoContext,
-    prior_results: tuple[Any, ...] = (),
-) -> RunAudit:
+@dataclass(frozen=True)
+class _RunItemCounts:
+    web_search_calls: int
+    function_tool_calls: int
+    scrape_tool_calls: int
+    handoff_items: int
+
+
+def _count_run_items(run_results: tuple[Any, ...]) -> _RunItemCounts:
+    """Count SDK run items relevant to the acceptance checks."""
     web_search_calls = 0
     function_tool_calls = 0
     scrape_tool_calls = 0
     handoff_items = 0
 
-    run_results = (*prior_results, result)
     for run_result in run_results:
         for item in run_result.new_items:
             item_type = getattr(item, "type", "")
@@ -173,20 +177,15 @@ def audit_run_items(
             if item_type in {"handoff_call_item", "handoff_output_item"}:
                 handoff_items += 1
 
-    audit = RunAudit(
-        runner_calls=len(run_results),
+    return _RunItemCounts(
         web_search_calls=web_search_calls,
-        rejected_research_candidates=len(context.candidate_rejections),
         function_tool_calls=function_tool_calls,
-        handoff_items=handoff_items,
-        candidate_save_calls=context.candidate_save_calls,
-        evaluation_tool_calls=context.evaluation_tool_calls,
-        handoff_callbacks=context.handoff_calls,
-        cached_candidates_loaded=context.cached_candidates_loaded,
-        cached_candidates_written=context.cached_candidates_written,
         scrape_tool_calls=scrape_tool_calls,
-        last_agent=result.last_agent.name,
+        handoff_items=handoff_items,
     )
+
+
+def _verify_acceptance_checks(audit: RunAudit, context: KatsuoContext) -> None:
     if audit.web_search_calls < 1:
         raise RuntimeError(
             "Acceptance check failed: no WebSearchTool call was recorded."
@@ -205,6 +204,30 @@ def audit_run_items(
         )
     if audit.handoff_callbacks < 1 or audit.handoff_items < 1:
         raise RuntimeError("Acceptance check failed: no actual handoff was recorded.")
+
+
+def audit_run_items(
+    result: Any,
+    context: KatsuoContext,
+    prior_results: tuple[Any, ...] = (),
+) -> RunAudit:
+    run_results = (*prior_results, result)
+    counts = _count_run_items(run_results)
+    audit = RunAudit(
+        runner_calls=len(run_results),
+        web_search_calls=counts.web_search_calls,
+        rejected_research_candidates=len(context.candidate_rejections),
+        function_tool_calls=counts.function_tool_calls,
+        handoff_items=counts.handoff_items,
+        candidate_save_calls=context.candidate_save_calls,
+        evaluation_tool_calls=context.evaluation_tool_calls,
+        handoff_callbacks=context.handoff_calls,
+        cached_candidates_loaded=context.cached_candidates_loaded,
+        cached_candidates_written=context.cached_candidates_written,
+        scrape_tool_calls=counts.scrape_tool_calls,
+        last_agent=result.last_agent.name,
+    )
+    _verify_acceptance_checks(audit, context)
     return audit
 
 
@@ -561,6 +584,37 @@ def build_agents(model: str = DEFAULT_MODEL) -> WorkflowAgents:
     )
 
 
+def _ingest_research_batch(
+    context: KatsuoContext,
+    research_batch: ResearchBatch,
+    as_of: date,
+) -> None:
+    """Accumulate, cache, and re-validate the candidates from one research run."""
+    discovered = [
+        candidate
+        for candidate in deduplicate_restaurant_candidates(
+            list(research_batch.candidates)
+        )
+        if candidate_within_range(context, candidate)
+    ]
+    context.collected_candidates = accumulate_restaurant_candidates(
+        context.collected_candidates,
+        discovered,
+    )
+    context.cached_candidates_written += cache_restaurant_candidates(
+        context,
+        discovered,
+    )
+    accepted, rejections = partition_candidates_by_review_validity(
+        context.collected_candidates,
+        as_of,
+        context.scraped_pages,
+    )
+    context.pending_candidates = deduplicate_restaurant_candidates(accepted)
+    context.candidate_rejections = rejections
+    persist_discovered_restaurants(context, as_of)
+
+
 async def run_web_research_phase(
     agent: Agent[KatsuoContext],
     prompt: str,
@@ -587,29 +641,7 @@ async def run_web_research_phase(
     )
     _emit_progress(context, f"{progress_label}のAPI応答を受信")
     research_batch = ResearchBatch.model_validate(result.final_output)
-    discovered = [
-        candidate
-        for candidate in deduplicate_restaurant_candidates(
-            list(research_batch.candidates)
-        )
-        if candidate_within_range(context, candidate)
-    ]
-    context.collected_candidates = accumulate_restaurant_candidates(
-        context.collected_candidates,
-        discovered,
-    )
-    context.cached_candidates_written += cache_restaurant_candidates(
-        context,
-        discovered,
-    )
-    accepted, rejections = partition_candidates_by_review_validity(
-        context.collected_candidates,
-        as_of,
-        context.scraped_pages,
-    )
-    context.pending_candidates = deduplicate_restaurant_candidates(accepted)
-    context.candidate_rejections = rejections
-    persist_discovered_restaurants(context, as_of)
+    _ingest_research_batch(context, research_batch, as_of)
     return result
 
 
@@ -651,18 +683,8 @@ async def run_storage_and_evaluation_phase(
     return result
 
 
-async def run_katsuo_workflow(
-    context: KatsuoContext,
-    model: str = DEFAULT_MODEL,
-    max_turns: int = 24,
-    research_attempts: int = 3,
-) -> WorkflowOutcome:
-    if research_attempts < 1:
-        raise ValueError("research_attempts must be at least 1.")
-    context.model = model
-    context.trace_id = gen_trace_id()
-    agents = build_agents(model=model)
-    as_of = datetime.now(timezone.utc).date()
+def _prime_context_from_cache(context: KatsuoContext, as_of: date) -> None:
+    """Load cached discoveries and rebuild the evaluation pool before research."""
     cached_candidates, cache_rejections = load_cached_restaurant_candidates(
         context,
         as_of,
@@ -692,6 +714,82 @@ async def run_katsuo_workflow(
         f"収集済み{len(cached_candidates)}店 / "
         f"評価可能{len(cached_evaluation_candidates)}店",
     )
+
+
+async def _run_research_attempts(
+    web_researcher: Agent[KatsuoContext],
+    context: KatsuoContext,
+    base_prompt: str,
+    max_turns: int,
+    research_attempts: int,
+    as_of: date,
+) -> list[Any]:
+    """Run discovery/enrichment research until the evaluation pool is ready."""
+    research_results: list[Any] = []
+    current_prompt = _build_discovery_prompt(base_prompt, context)
+    research_mode = "店舗発見"
+    for attempt in range(1, research_attempts + 1):
+        try:
+            research_result = await run_web_research_phase(
+                agent=web_researcher,
+                prompt=current_prompt,
+                context=context,
+                max_turns=max_turns,
+                progress_label=f"{research_mode} {attempt}/{research_attempts}",
+            )
+        except ModelBehaviorError as exc:
+            if attempt >= research_attempts:
+                raise InvalidResearchOutputError(
+                    _format_invalid_research_output_error(attempt, exc)
+                ) from exc
+            current_prompt = _build_invalid_output_retry_prompt(
+                current_prompt,
+                attempt + 1,
+            )
+            continue
+
+        research_results.append(research_result)
+        summary = summarize_candidate_pool(context, context.pending_candidates)
+        _emit_progress(
+            context,
+            "候補収集・検証完了: "
+            f"収集済み{len(context.collected_candidates)}店 / "
+            f"評価可能{summary.unique_candidates}店",
+        )
+        if summary.is_ready:
+            break
+        if attempt < research_attempts:
+            collected_summary = summarize_candidate_pool(
+                context,
+                context.collected_candidates,
+            )
+            if collected_summary.within_range < MIN_IN_RANGE_CANDIDATES:
+                current_prompt = _build_discovery_prompt(base_prompt, context)
+                research_mode = "店舗発見"
+            else:
+                current_prompt = _build_enrichment_prompt(
+                    base_prompt,
+                    context,
+                    summary,
+                    as_of,
+                )
+                research_mode = "口コミ補完"
+    return research_results
+
+
+async def run_katsuo_workflow(
+    context: KatsuoContext,
+    model: str = DEFAULT_MODEL,
+    max_turns: int = 24,
+    research_attempts: int = 3,
+) -> WorkflowOutcome:
+    if research_attempts < 1:
+        raise ValueError("research_attempts must be at least 1.")
+    context.model = model
+    context.trace_id = gen_trace_id()
+    agents = build_agents(model=model)
+    as_of = datetime.now(timezone.utc).date()
+    _prime_context_from_cache(context, as_of)
     trace_id = context.trace_id
     prompt = (
         "高知駅周辺でカツオ料理がおいしい店を調査し、TOP 5を作成してください。"
@@ -707,55 +805,14 @@ async def run_katsuo_workflow(
             "max_distance_km": str(context.max_distance_km),
         },
     ):
-        research_results = []
-        current_prompt = _build_discovery_prompt(prompt, context)
-        research_mode = "店舗発見"
-        for attempt in range(1, research_attempts + 1):
-            try:
-                research_result = await run_web_research_phase(
-                    agent=agents.web_researcher,
-                    prompt=current_prompt,
-                    context=context,
-                    max_turns=max_turns,
-                    progress_label=f"{research_mode} {attempt}/{research_attempts}",
-                )
-            except ModelBehaviorError as exc:
-                if attempt >= research_attempts:
-                    raise InvalidResearchOutputError(
-                        _format_invalid_research_output_error(attempt, exc)
-                    ) from exc
-                current_prompt = _build_invalid_output_retry_prompt(
-                    current_prompt,
-                    attempt + 1,
-                )
-                continue
-
-            research_results.append(research_result)
-            summary = summarize_candidate_pool(context, context.pending_candidates)
-            _emit_progress(
-                context,
-                "候補収集・検証完了: "
-                f"収集済み{len(context.collected_candidates)}店 / "
-                f"評価可能{summary.unique_candidates}店",
-            )
-            if summary.is_ready:
-                break
-            if attempt < research_attempts:
-                collected_summary = summarize_candidate_pool(
-                    context,
-                    context.collected_candidates,
-                )
-                if collected_summary.within_range < MIN_IN_RANGE_CANDIDATES:
-                    current_prompt = _build_discovery_prompt(prompt, context)
-                    research_mode = "店舗発見"
-                else:
-                    current_prompt = _build_enrichment_prompt(
-                        prompt,
-                        context,
-                        summary,
-                        as_of,
-                    )
-                    research_mode = "口コミ補完"
+        research_results = await _run_research_attempts(
+            web_researcher=agents.web_researcher,
+            context=context,
+            base_prompt=prompt,
+            max_turns=max_turns,
+            research_attempts=research_attempts,
+            as_of=as_of,
+        )
         result = await run_storage_and_evaluation_phase(
             agent=agents.researcher,
             context=context,

@@ -221,7 +221,6 @@ async def on_evaluation_handoff(
             "Handoff rejected: save_restaurant_candidates must run first."
         )
     wrapper.context.handoff_calls += 1
-    wrapper.context.handoff_summary = input_data.research_summary
 
 
 def _model_override(model: str) -> dict[str, str]:

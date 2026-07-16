@@ -1,8 +1,10 @@
 """Function tools exposed to the agents.
 
 Deterministic domain logic lives in ``candidates``; artifact persistence
-lives in ``persistence``. Their public names are re-exported here so that
-existing imports keep working.
+lives in ``persistence``. Their public names — and the names that were
+importable from this module before that split (models, scoring helpers,
+evidence checks, and renderers) — are re-exported here so that existing
+imports keep working.
 """
 
 from __future__ import annotations
@@ -31,6 +33,20 @@ from .config import (
     RECENT_REVIEW_MAX_AGE_DAYS,
 )
 from .context import KatsuoContext
+from .evidence import (
+    sanitize_candidate_claims,
+    scraped_pages_for_candidate,
+    validate_candidate_references,
+)
+from .models import (
+    CandidateStore,
+    RecentReview,
+    RestaurantCandidate,
+    RestaurantCacheEntry,
+    RestaurantCandidateInput,
+    ScrapedPage,
+    TopFiveStore,
+)
 from .persistence import (
     cache_restaurant_candidates,
     create_top_five_report,
@@ -40,34 +56,53 @@ from .persistence import (
     persist_run_manifest,
     write_json_artifact,
 )
-from .report import render_context_markdown
+from .report import render_context_markdown, render_top_five_html
+from .scoring import apply_range_rule, haversine_km, normalized_url_host, rank_top_five
+from .scraping import canonical_url
 
 __all__ = [
     "CandidatePoolSummary",
+    "CandidateStore",
     "DUPLICATE_LOCATION_THRESHOLD_KM",
+    "KatsuoContext",
     "MIN_IN_RANGE_CANDIDATES",
     "MIN_RECENT_REVIEW_COUNT",
     "MIN_REVIEW_SOURCE_SITES",
     "RECENT_REVIEW_MAX_AGE_DAYS",
+    "RecentReview",
+    "RestaurantCacheEntry",
+    "RestaurantCandidate",
+    "RestaurantCandidateInput",
+    "ScrapedPage",
+    "TopFiveStore",
     "accumulate_restaurant_candidates",
+    "apply_range_rule",
     "cache_restaurant_candidates",
     "candidate_save_is_enabled",
     "candidate_within_range",
+    "canonical_url",
     "create_top_five_report",
     "deduplicate_restaurant_candidates",
     "evaluate_and_render_top_five",
+    "haversine_km",
     "insufficient_candidate_pool_message",
     "load_cached_restaurant_candidates",
     "merge_restaurant_candidates",
     "normalize_identity_text",
+    "normalized_url_host",
     "partition_candidates_by_review_validity",
     "persist_discovered_restaurants",
     "persist_restaurant_candidates",
     "persist_run_manifest",
+    "rank_top_five",
     "render_context_markdown",
+    "render_top_five_html",
+    "sanitize_candidate_claims",
     "save_restaurant_candidates",
+    "scraped_pages_for_candidate",
     "summarize_candidate_pool",
     "summarize_issue_list",
+    "validate_candidate_references",
     "write_json_artifact",
 ]
 

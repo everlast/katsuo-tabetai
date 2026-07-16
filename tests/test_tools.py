@@ -25,6 +25,35 @@ from test_scoring import HOTEL, make_candidate
 from helpers import populate_scraped_pages
 
 
+def test_legacy_tools_namespace_is_reexported() -> None:
+    """モジュール分割前に katsuo_tabetai.tools から import できた公開名を維持する。"""
+    import katsuo_tabetai.tools as tools_module
+
+    legacy_names = (
+        "CandidateStore",
+        "KatsuoContext",
+        "RecentReview",
+        "RestaurantCacheEntry",
+        "RestaurantCandidate",
+        "RestaurantCandidateInput",
+        "ScrapedPage",
+        "TopFiveStore",
+        "apply_range_rule",
+        "canonical_url",
+        "haversine_km",
+        "normalized_url_host",
+        "rank_top_five",
+        "render_context_markdown",
+        "render_top_five_html",
+        "sanitize_candidate_claims",
+        "scraped_pages_for_candidate",
+        "validate_candidate_references",
+    )
+    for name in legacy_names:
+        assert hasattr(tools_module, name), f"tools.{name} must stay importable"
+        assert name in tools_module.__all__, f"tools.{name} must stay in __all__"
+
+
 def candidate_input(index: int) -> RestaurantCandidateInput:
     candidate = make_candidate(index)
     return RestaurantCandidateInput.model_validate(

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import unicodedata
 from collections.abc import Mapping
 from datetime import date
-from functools import lru_cache
 from urllib.parse import urlsplit
 
 from .models import RecentReview, RestaurantCandidateInput, ScrapedPage
@@ -49,13 +49,49 @@ _MONTH_NAMES = (
 )
 
 
-# Validation passes re-normalize the same page bodies (up to 100k characters)
-# once per checked claim, so memoizing this pure function removes the dominant
-# repeated cost without changing any output.
-@lru_cache(maxsize=4096)
 def normalize_text(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).translate(_DASHES).casefold()
     return re.sub(r"[^0-9a-zぁ-んァ-ヶ一-龠]+", "", normalized)
+
+
+class _BoundedPageTextCache:
+    """Normalized page texts keyed by a source digest, with a hard ceiling.
+
+    Validation passes re-normalize the same page bodies (up to 100k
+    characters) once per checked claim, so reusing each page's normalization
+    removes the dominant repeated cost. Keys hold a freshly computed SHA-256
+    of the exact source text instead of the body itself, only the normalized
+    output is retained, and the cache never keeps more than
+    ``max_total_chars`` characters, so a long-lived process cannot grow it
+    without bound.
+    """
+
+    def __init__(self, max_total_chars: int) -> None:
+        self.max_total_chars = max_total_chars
+        self._entries: dict[str, str] = {}
+        self._total_chars = 0
+
+    @property
+    def total_chars(self) -> int:
+        return self._total_chars
+
+    def normalized_page_text(self, page: ScrapedPage, *, include_title: bool) -> str:
+        source = f"{page.title}\n{page.content}" if include_title else page.content
+        key = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        cached = self._entries.get(key)
+        if cached is not None:
+            return cached
+        normalized = normalize_text(source)
+        if len(normalized) <= self.max_total_chars:
+            if self._total_chars + len(normalized) > self.max_total_chars:
+                self._entries.clear()
+                self._total_chars = 0
+            self._entries[key] = normalized
+            self._total_chars += len(normalized)
+        return normalized
+
+
+_PAGE_TEXT_CACHE = _BoundedPageTextCache(max_total_chars=5_000_000)
 
 
 def _name_aliases(name: str) -> set[str]:
@@ -73,7 +109,7 @@ def _name_aliases(name: str) -> set[str]:
 
 
 def _page_names_restaurant(candidate: RestaurantCandidateInput, page: ScrapedPage) -> bool:
-    page_text = normalize_text(f"{page.title}\n{page.content}")
+    page_text = _PAGE_TEXT_CACHE.normalized_page_text(page, include_title=True)
     return any(alias in page_text for alias in _name_aliases(candidate.name))
 
 
@@ -95,7 +131,7 @@ def _page_identifies_location(
 ) -> bool:
     if _page_names_address(candidate, page):
         return True
-    page_text = normalize_text(f"{page.title}\n{page.content}")
+    page_text = _PAGE_TEXT_CACHE.normalized_page_text(page, include_title=True)
     return any(alias in page_text for alias in _location_name_aliases(candidate.name))
 
 
@@ -109,11 +145,13 @@ def _address_anchor(address: str) -> str:
 
 def _page_names_address(candidate: RestaurantCandidateInput, page: ScrapedPage) -> bool:
     anchor = _address_anchor(candidate.address)
-    return len(anchor) >= 5 and anchor in normalize_text(page.content)
+    if len(anchor) < 5:
+        return False
+    return anchor in _PAGE_TEXT_CACHE.normalized_page_text(page, include_title=False)
 
 
 def _page_names_katsuo_dish(candidate: RestaurantCandidateInput, page: ScrapedPage) -> bool:
-    page_text = normalize_text(page.content)
+    page_text = _PAGE_TEXT_CACHE.normalized_page_text(page, include_title=False)
     if not any(normalize_text(term) in page_text for term in KATSUO_TERMS):
         return False
     exact_dish = normalize_text(candidate.katsuo_dish)
@@ -128,7 +166,7 @@ def _page_names_katsuo_dish(candidate: RestaurantCandidateInput, page: ScrapedPa
 
 
 def _page_supports_feature(page: ScrapedPage, terms: tuple[str, ...]) -> bool:
-    page_text = normalize_text(page.content)
+    page_text = _PAGE_TEXT_CACHE.normalized_page_text(page, include_title=False)
     return any(normalize_text(term) in page_text for term in terms)
 
 

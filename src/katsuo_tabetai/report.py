@@ -211,7 +211,13 @@ def _restaurant_row(restaurant) -> str:
             <p class="review-score">総合点のうちレビュー評判: {restaurant.score_breakdown.recent_reviews:.2f} / {RECENT_REVIEWS_MAX_POINTS:g}点</p>
             <dl class="score-breakdown review-score-breakdown" aria-label="レビュー評判スコアの評価項目別内訳">{review_score_breakdown_html}
             </dl>
-            <ol class="reviews">{review_html}</ol>
+            <details class="reviews-details">
+              <summary class="reviews-toggle">
+                <span class="reviews-toggle-closed">レビュー全{reputation.review_count}件を表示</span>
+                <span class="reviews-toggle-open">レビュー全{reputation.review_count}件を閉じる</span>
+              </summary>
+              <ol class="reviews">{review_html}</ol>
+            </details>
           </section>
         </div>
       </article>"""
@@ -415,8 +421,34 @@ _STYLE_CSS = """\
       margin-top: 12px;
       margin-bottom: 0;
     }
-    .reviews { margin: 18px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
-    .review-item { padding: 16px 0; border-bottom: 1px solid var(--line); }
+    .reviews-details { margin-top: 18px; border-top: 1px solid var(--line); }
+    .reviews-toggle {
+      position: relative;
+      padding: 14px 36px 14px 0;
+      color: var(--ocean);
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      list-style: none;
+    }
+    .reviews-toggle::-webkit-details-marker { display: none; }
+    .reviews-toggle::after {
+      content: "+";
+      position: absolute;
+      top: 50%;
+      right: 2px;
+      color: var(--ocean);
+      font: 700 20px/1 "SFMono-Regular", Menlo, monospace;
+      transform: translateY(-50%);
+    }
+    .reviews-details[open] > .reviews-toggle::after { content: "−"; }
+    .reviews-toggle-open { display: none; }
+    .reviews-details[open] .reviews-toggle-closed { display: none; }
+    .reviews-details[open] .reviews-toggle-open { display: inline; }
+    .reviews-toggle:hover { color: var(--bonito); }
+    .reviews-toggle:focus-visible { outline: 3px solid var(--market); outline-offset: 3px; }
+    .reviews { margin: 0; padding: 0; list-style: none; }
+    .review-item { padding: 16px 0; border-top: 1px solid var(--line); }
     .review-meta { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
     .review-meta strong { color: var(--ocean); font: 700 14px/1.4 "SFMono-Regular", Menlo, monospace; }
     .review-meta span { color: var(--muted); font-size: 11px; text-align: right; }
@@ -425,6 +457,7 @@ _STYLE_CSS = """\
     .positive-point { padding: 3px 7px; background: #e9f4f1; color: #155f59; font-size: 11px; }
     .review-item .review-caution { margin: 8px 0; color: #854237; font-size: 11px; }
     .review-item a { display: inline-block; margin-top: 9px; color: var(--ocean); font-size: 11px; font-weight: 700; }
+    .review-item a:focus-visible { outline: 3px solid var(--market); outline-offset: 3px; }
     .score-note {
       margin-top: 32px;
       padding: 18px 20px;

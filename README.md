@@ -26,17 +26,17 @@ Katsuo Research Agent
 - 段階的なデータ収集: 口コミサイトの個別店舗・口コミページを起点に、検証可能な口コミを持つ候補の発見と即時保存を優先します。その後、店舗公式・観光公式ページで店名、住所、カツオ料理、料理特徴を補完します。範囲内20店を収集目標として店舗発見を既定で3回繰り返し、その後に収集済み候補を5店ずつ選んで口コミを補完します。多数の店舗と全口コミを1応答へ詰め込んで口コミが欠落することを防ぎます。
 - 実handoff: 後段runの`researcher.handoffs=[handoff(...)]`で評価担当へ制御を移します。`Agent.as_tool()`は使用しません。
 - 最終エージェント: 実行後に`result.last_agent is evaluator`を検証し、違えば失敗させます。
-- 検索・スクレイプツール: Web調査フェーズで`WebSearchTool`と`scrape_reference_page`を必須とします。食べログ、ホットペッパーグルメ、Google Maps、Yahoo!マップ、Rettyなどの口コミサイトを候補発見の起点とし、店舗公式・観光公式は料理・所在地・特徴の補完根拠として扱います。公式情報をレビュー件数には数えません。スクレイパーは公開HTTP(S)ページだけを取得し、各リダイレクト先にも公開ネットワーク制約を再適用します。HTML本文、取得時刻、最終URL、SHA-256を保存します。
+- 検索・スクレイプツール: Web調査フェーズで`WebSearchTool`と`scrape_reference_page`を必須とします。食べログ、ホットペッパーグルメ、Google Maps、Yahoo!マップ、Rettyなどの口コミサイトを候補発見の起点とし、店舗公式・観光公式は料理・所在地・特徴の補完根拠として扱います。公式情報をレビュー件数には数えません。スクレイパーは公開HTTP(S)ページだけを取得し、各リダイレクト先にも公開ネットワーク制約を再適用します。HTMLから抽出した可読テキスト（最大10万文字）、取得時刻、最終URL、抽出テキストのSHA-256を保存します。
 - 独自Function Tool: ページ取得、候補保存、評価・HTML生成の3ツールを`@function_tool`で定義しています。
-- トレース: ワークフロー全体を`trace()`で囲み、CLIにtrace IDとダッシュボードURLを出力します。
+- トレース: Web調査から候補保存・評価までを`trace()`で囲み、CLIにtrace IDとダッシュボードURLを出力します。起動時の店舗キャッシュ読込はトレース開始前に行います。
 - コンテキスト: 検証済み店舗、料理根拠、追加情報源、レビューを番号付きMarkdownリストとして`outputs/context.md`へ保存します。
 - 構造化保存: 調査で発見した範囲内店舗は、レビュー件数や本文照合の合否にかかわらず`outputs/restaurants/`へ即時保存します。全収集候補と評価可否・除外理由を`outputs/discovered_restaurants.json`へ集約し、評価条件を通った候補だけを`outputs/restaurant_candidates.json`へ分離します。
-- 根拠URL: `evidence_url`、全`source_urls`、全`review_url`を実際にスクレイピングします。主根拠は店舗名・住所・料理名を本文照合し、不一致なら店舗を棄却します。追加根拠は主根拠と異なるドメインの店舗公式メニュー、観光公式、予約サイトの料理ページを優先し、店名、住所または支店名、料理名を照合します。不一致なら候補から削って採点対象にしません。主根拠を含む3独立ドメインを収集目標とし、見つかる場合は採点上限の5ドメインまで収集します。藁焼き、塩たたき、季節性のフラグも本文で確認できないものは`false`へ落とします。
+- 根拠URL: 収集層では、未取得または本文未確認のURLを含む候補も`outputs/restaurants/`へ保持します。評価候補に採用する`evidence_url`、全`source_urls`、全`review_url`は実際にスクレイピングし、取得本文で検証します。主根拠は店舗名・住所・料理名を照合し、不一致なら評価候補から除外します。追加根拠は主根拠と異なるドメインの店舗公式メニュー、観光公式、予約サイトの料理ページを優先し、店名、住所または支店名、料理名を照合します。不一致なら候補から削って採点対象にしません。主根拠を含む3独立ドメインを収集目標とし、見つかる場合は採点上限の5ドメインまで収集します。藁焼き、塩たたき、季節性のフラグも本文で確認できないものは`false`へ落とします。
 - 新着レビュー: 各店5〜10件かつレビューURLの異なるドメインを2サイト以上必須とし、生成日から365日以内の公開日または訪問月・5点評価・投稿者名・要約・好評点・注意点を保存します。レビューURLは個別店舗のレビューを確認できるページに限定し、住所または支店名込みの店舗識別に加えて、同じ本文範囲で投稿者名、日付、評価を照合します。年月表示だけの場合は月初日として新着判定し、HTMLには年月だけを表示します。未来日、期間外、重複、本文照合できない口コミだけを評価用集合から除外し、検証済み口コミが5件未満になった店舗は不足分の別口コミを次の補完調査で探します。
 - 範囲判定: ホテルと店舗の緯度経度からHaversine式で直線距離を計算し、`within_range`をコードで決定します。同じ店名でも住所・座標が異なる支店は別店舗として扱い、同一店名かつ同一住所または約50m以内の候補だけを重複として除外します。
 - 決定論スコア: 保存済みの事実とレビュー評価だけから100点満点で計算し、同点時は距離、店舗名の順で整列します。
 - 推薦理由: 料理特徴、レビュー平均、好評点、注意点、距離からコードで店舗ごとの推薦理由を生成します。
-- HTML: `outputs/top5.html`へ推薦理由とレビュー評判を含むTOP 5を出力します。店舗ごとのレビュー一覧は初期状態を閉じ、全件をまとめて開閉できます。
+- HTML: `outputs/top5.html`へ推薦理由とレビュー評判を含むTOP 5の詳細を出力し、5位の直下に6位以下を順位・店名・点数・料理名・距離・平均評価の簡易リストで表示します。TOP 5の店舗ごとのレビュー一覧は初期状態を閉じ、全件をまとめて開閉できます。
 
 ## セットアップ
 
@@ -155,13 +155,14 @@ uv --no-config run pytest tests/test_scoring.py tests/test_report.py
 
 ## トレース確認
 
-実行後のJSONに`trace_id`と`https://platform.openai.com/traces`が表示されます。該当traceでは次を確認できます。
+実行後のJSONに`trace_id`と`https://platform.openai.com/traces`が表示されます。該当traceでは次のSDKイベントを確認できます。各runの候補をキャッシュへ累積し、評価条件を検証する処理はrun間にコードで実行されます。
 
-1. `Katsuo Web Research Agent`のWeb search callと構造化候補出力
-2. `Katsuo Research Agent`の`save_restaurant_candidates` Function Tool call
-3. 各根拠URLに対する`Katsuo Web Research Agent`の`scrape_reference_page` call
-4. `transfer_to_katsuo_evaluation`のhandoff
-5. `Katsuo Evaluation Agent`の`evaluate_and_render_top_five` call
+1. 店舗発見と口コミ補完の各SDK runにおける`Katsuo Web Research Agent`のWeb search call
+2. 同じrun内で各根拠URLに対して行う`scrape_reference_page` call
+3. 各runの構造化候補出力
+4. 全調査runの候補を累積・検証した後に行う`Katsuo Research Agent`の`save_restaurant_candidates` Function Tool call
+5. `transfer_to_katsuo_evaluation`のhandoff
+6. `Katsuo Evaluation Agent`の`evaluate_and_render_top_five` call
 
 SDKのトレースは通常デフォルトで有効です。無効化用の環境変数やカスタムtrace processorを設定している場合は、その設定を外して実行してください。
 
